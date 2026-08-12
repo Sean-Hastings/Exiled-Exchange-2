@@ -500,5 +500,9 @@
     "output_folder": "Output Folder",
     "output_file_help": "Some info text",
     "record_count": "Session Rolls:"
+  },
+  "tablet_ev": {
+    "name": "Tablet EV",
+    "hotkey": "Tablet EV Dashboard"
   }
 }

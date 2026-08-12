@@ -1,0 +1,133 @@
+export interface RegexTargetMod {
+  id: string;
+  name: string;
+  minDesiredValue?: number;
+  regexHint?: string;
+  highlightCategory: "high_value" | "reroll" | "brick";
+  /** Higher = kept longer when trimming to 50 chars */
+  priority?: number;
+}
+
+const STASH_LIMIT = 50;
+
+function numberRangePattern(min: number, max = 99): string {
+  if (min <= 0) return "\\d+";
+  if (min >= 10 && min <= 99) {
+    const tens = Math.floor(min / 10);
+    const ones = min % 10;
+    if (min === max) return String(min);
+    // Compact ranges for common tablet thresholds
+    if (ones === 0) {
+      return `${tens}\\d|[${tens + 1}-9]\\d`;
+    }
+    if (tens === Math.floor(max / 10) || max >= 99) {
+      return `${tens}[${ones}-9]|[${tens + 1}-9]\\d`;
+    }
+  }
+  if (min >= 1 && min <= 9) {
+    return `[${min}-9]|\\d\\d`;
+  }
+  return `${min}`;
+}
+
+/**
+ * Compress high-value tablet mod targets into a stash-tab regex
+ * that respects PoE2's 50-character search limit.
+ */
+export class TabletRegexBuilder {
+  public static buildOptimizedRegex(targets: RegexTargetMod[]): string {
+    const sorted = [...targets].sort(
+      (a, b) => (b.priority ?? 0) - (a.priority ?? 0),
+    );
+
+    const patterns: string[] = [];
+    for (const target of sorted) {
+      patterns.push(this.patternFor(target));
+    }
+
+    // Deduplicate while preserving order
+    const unique = [...new Set(patterns.filter(Boolean))];
+    return this.fitToLimit(unique);
+  }
+
+  public static buildForModIds(
+    modIds: string[],
+    hints: Record<string, { hint: string; min?: number; priority?: number }>,
+  ): string {
+    return this.buildOptimizedRegex(
+      modIds.map((id) => ({
+        id,
+        name: id,
+        regexHint: hints[id]?.hint,
+        minDesiredValue: hints[id]?.min,
+        priority: hints[id]?.priority ?? 0,
+        highlightCategory: "high_value",
+      })),
+    );
+  }
+
+  private static patternFor(target: RegexTargetMod): string {
+    if (target.regexHint) {
+      if (target.minDesiredValue != null) {
+        const range = numberRangePattern(target.minDesiredValue);
+        // Keep short: "35%.*pa" style when hint is a simple token
+        if (!target.regexHint.includes("|") && target.regexHint.length <= 6) {
+          return `(${range})%.*${target.regexHint}`;
+        }
+      }
+      return target.regexHint;
+    }
+
+    if (target.id.includes("pack_size")) {
+      const min = target.minDesiredValue ?? 8;
+      return `(${numberRangePattern(min)})%.*pa`;
+    }
+    if (target.id.includes("splinter")) {
+      return "spl";
+    }
+    if (target.id.includes("logbook")) {
+      return "logb";
+    }
+    if (target.id.includes("simulacrum") || target.id.includes("delirium_splinter")) {
+      return "simu";
+    }
+    if (target.id.includes("desecrated")) {
+      return "dese";
+    }
+    if (target.id.includes("waystone") || target.id.includes("ways")) {
+      return "ways";
+    }
+
+    // Fallback: distinct 3–4 char token from the name
+    const token = target.name
+      .replace(/[^a-zA-Z]/g, "")
+      .slice(0, 4)
+      .toLowerCase();
+    return token || target.id.slice(0, 4);
+  }
+
+  private static fitToLimit(patterns: string[]): string {
+    if (!patterns.length) return '""';
+
+    let working = [...patterns];
+    let merged = `"${working.join("|")}"`;
+
+    while (merged.length > STASH_LIMIT && working.length > 1) {
+      working.pop();
+      merged = `"${working.join("|")}"`;
+    }
+
+    // If a single pattern is still too long, truncate aggressively
+    if (merged.length > STASH_LIMIT) {
+      const innerBudget = STASH_LIMIT - 2; // quotes
+      const truncated = working[0].slice(0, Math.max(innerBudget, 1));
+      merged = `"${truncated}"`;
+    }
+
+    return merged;
+  }
+
+  public static withinLimit(regex: string): boolean {
+    return regex.length <= STASH_LIMIT;
+  }
+}

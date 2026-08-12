@@ -8,6 +8,7 @@ import type { ItemCheckWidget } from "./item-check/widget";
 import type { ItemSearchWidget } from "./item-search/widget";
 import { registry as widgetRegistry } from "./overlay/widget-registry.js";
 import { LibraryWidget } from "./library/widget";
+import type { TabletEVWidget } from "./tablets/widget";
 
 const _config = shallowRef<Config | null>(null);
 let _lastSavedConfig: Config | null = null;
@@ -156,7 +157,7 @@ export interface Config {
 }
 
 export const defaultConfig = (): Config => ({
-  configVersion: 34,
+  configVersion: 35,
   overlayKey: "Shift + Space",
   overlayBackground: "rgba(129, 139, 149, 0.15)",
   overlayBackgroundClose: true,
@@ -669,6 +670,22 @@ function upgradeConfig(_config: Config): Config {
 
     config.configVersion = 34;
   }
+
+  if (config.configVersion < 35) {
+    const hasTabletEv = config.widgets.some((w) => w.wmType === "tablet-ev");
+    if (!hasTabletEv) {
+      const defaults = defaultConfig().widgets.find(
+        (w) => w.wmType === "tablet-ev",
+      );
+      if (defaults) {
+        config.widgets.push({
+          ...defaults,
+          wmId: Math.max(0, ...config.widgets.map((w) => w.wmId)) + 1,
+        });
+      }
+    }
+    config.configVersion = 35;
+  }
   /* eslint-enable */
 
   return config as unknown as Config;
@@ -747,6 +764,14 @@ function getConfigForHost(): HostConfig {
     actions.push({
       shortcut: delveGrid.toggleKey,
       action: { type: "trigger-event", target: "delve-grid" },
+      keepModKeys: true,
+    });
+  }
+  const tabletEv = AppConfig("tablet-ev") as TabletEVWidget | undefined;
+  if (tabletEv?.toggleKey) {
+    actions.push({
+      shortcut: tabletEv.toggleKey,
+      action: { type: "trigger-event", target: "tablet-ev" },
       keepModKeys: true,
     });
   }

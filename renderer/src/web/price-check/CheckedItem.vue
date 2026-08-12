@@ -4,6 +4,7 @@
     <!-- <price-prediction v-if="showPredictedPrice" class="mb-4" :item="item" /> -->
     <!-- <price-trend v-else :item="item" :filters="itemFilters" /> -->
     <price-trend :item="item" :filters="itemFilters" />
+    <tablet-action-banner v-if="isTablet" :item="item" />
     <filters-block
       ref="filtersComponent"
       :filters="itemFilters"
@@ -84,6 +85,7 @@ import PricePrediction from "./price-prediction/PricePrediction.vue";
 import StackValue from "./stack-value/StackValue.vue";
 import FilterName from "./filters/FilterName.vue";
 import Tip from "../help/Tip.vue";
+import TabletActionBanner from "./tablets/TabletActionBanner.vue";
 import {
   CATEGORY_TO_TRADE_ID,
   createTradeRequest,
@@ -93,6 +95,7 @@ import { FilterPreset } from "./filters/interfaces";
 import { PriceCheckWidget } from "../overlay/interfaces";
 import { useLeagues } from "@/web/background/Leagues";
 import { randomTip, TIP_FREQUENCY_MAP } from "../help/tips";
+import { isTabletItem } from "./tablets";
 
 let _showSupportLinksCounter = 0;
 let _showTipCounter = 15;
@@ -110,6 +113,7 @@ export default defineComponent({
     FilterName,
     StackValue,
     Tip,
+    TabletActionBanner,
   },
   props: {
     item: {
@@ -336,9 +340,11 @@ export default defineComponent({
     );
 
     const { t } = useI18n();
+    const isTablet = computed(() => isTabletItem(props.item));
 
     return {
       t,
+      isTablet,
       itemFilters,
       itemStats,
       doSearch,

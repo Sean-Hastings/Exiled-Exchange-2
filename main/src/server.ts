@@ -10,6 +10,10 @@ import { ConfigStore } from "./host-files/ConfigStore";
 import { addFileUploadRoutes } from "./host-files/file-uploads";
 import type { AppUpdater } from "./AppUpdater";
 import type { Logger } from "./RemoteLogger";
+import {
+  addTabletTierSurveyRoutes,
+  maybeAutostartTabletSurveyFromArgv,
+} from "./tablet-survey-api";
 
 export const server = createServer();
 const websocketServer = new WebSocketServer({ noServer: true });
@@ -22,7 +26,8 @@ if (!process.env.VITE_DEV_SERVER_URL) {
     if (
       req.url?.startsWith("/config") ||
       req.url?.startsWith("/uploads") ||
-      req.url?.startsWith("/proxy")
+      req.url?.startsWith("/proxy") ||
+      req.url?.startsWith("/api/")
     )
       return;
 
@@ -92,6 +97,9 @@ export async function startServer(
   logger: Logger,
 ): Promise<number> {
   const configStore = new ConfigStore(eventPipe);
+
+  addTabletTierSurveyRoutes(server, eventPipe, logger);
+  maybeAutostartTabletSurveyFromArgv(eventPipe, logger);
 
   websocketServer.on("connection", (socket) => {
     lastActiveClient = socket;

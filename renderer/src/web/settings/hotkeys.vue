@@ -37,6 +37,7 @@ import {
 } from "./utils";
 import { PriceCheckWidget, DelveGridWidget } from "@/web/overlay/interfaces";
 import { ItemCheckWidget } from "../item-check/widget.js";
+import type { TabletEVWidget } from "../tablets/widget";
 
 import UiRadio from "@/web/ui/UiRadio.vue";
 import HotkeysGeneric, { HotkeySchema } from "../settings/HotkeysGeneric.vue";
@@ -56,6 +57,7 @@ const hotkeys = computed<HotkeySchema[]>(() => {
     "delve-grid",
     props.config,
   )!;
+  const tabletEvWidget = findWidget<TabletEVWidget>("tablet-ev", props.config);
   return [
     {
       translationKey: "price_check.name",
@@ -90,6 +92,14 @@ const hotkeys = computed<HotkeySchema[]>(() => {
       translationKey: "settings.delve_grid",
       config: _configModelValue(delveGridWidget, "toggleKey"),
     },
+    ...(tabletEvWidget
+      ? [
+          {
+            translationKey: "tablet_ev.hotkey",
+            config: _configModelValue(tabletEvWidget, "toggleKey"),
+          },
+        ]
+      : []),
   ];
 });
 

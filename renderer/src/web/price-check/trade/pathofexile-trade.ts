@@ -548,6 +548,8 @@ export interface PricingResult {
   level?: string;
   gemSockets?: number;
   relativeDate: string;
+  /** ISO timestamp from trade `listing.indexed` (when the listing was created/updated). */
+  indexedAt?: string;
   priceAmount: number;
   priceCurrency: string;
   priceCurrencyRank?: number;
@@ -1257,14 +1259,23 @@ const cache = new Cache();
 export async function requestTradeResultList(
   body: TradeRequest,
   leagueId: string,
+  opts?: {
+    /**
+     * When true, wait through rate-limit queues instead of failing fast.
+     * Use for background bulk syncs (e.g. tablet market refresh).
+     */
+    allowSlowQueue?: boolean;
+  },
 ): Promise<SearchResult> {
   let data = cache.get<SearchResult>([body, leagueId]);
 
   if (!data) {
-    preventQueueCreation([
-      { count: 1, limiters: RATE_LIMIT_RULES.SEARCH },
-      { count: 1, limiters: RATE_LIMIT_RULES.FETCH },
-    ]);
+    if (!opts?.allowSlowQueue) {
+      preventQueueCreation([
+        { count: 1, limiters: RATE_LIMIT_RULES.SEARCH },
+        { count: 1, limiters: RATE_LIMIT_RULES.FETCH },
+      ]);
+    }
 
     await RateLimiter.waitMulti(RATE_LIMIT_RULES.SEARCH);
 
@@ -1393,6 +1404,7 @@ export async function requestResults(
         DateTime.fromISO(result.listing.indexed).toRelative({
           style: "short",
         }) ?? "",
+      indexedAt: result.listing.indexed,
       priceAmount: result.listing.price?.amount ?? 0,
       priceCurrency: result.listing.price?.currency ?? "no price",
       priceCurrencyRank,

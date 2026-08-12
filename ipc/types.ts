@@ -93,7 +93,9 @@ export type IpcEvent =
   | IpcConfigChanged
   | IpcUserAction
   | IpcWriteToFile
-  | IpcReparseLog;
+  | IpcReparseLog
+  | IpcTabletTierSurveyRun
+  | IpcTabletTierSurveyUpdate;
 
 export type IpcEventPayload<
   Name extends IpcEvent["name"],
@@ -233,6 +235,32 @@ type IpcWriteToFile = Event<
       data: ClientLogEvent;
       close: boolean;
     }
+>;
+
+/** Main → overlay: start/cancel Breach tablet tier survey (trade cookies in renderer). */
+type IpcTabletTierSurveyRun = Event<
+  "MAIN->CLIENT::tablet-tier-survey",
+  {
+    requestId: string;
+    action: "start" | "cancel";
+    forceNew?: boolean;
+    /** Absolute path for main to write checkpoints (optional). */
+    outPath?: string;
+    /** Resume seed loaded from checkpoint file by main (optional). */
+    seed?: unknown;
+  }
+>;
+
+/** Overlay → main: progress / final survey document for HTTP API + file write. */
+type IpcTabletTierSurveyUpdate = Event<
+  "CLIENT->MAIN::tablet-tier-survey",
+  {
+    requestId: string;
+    status: "running" | "complete" | "error" | "cancelled" | "paused";
+    detail?: string;
+    /** Full survey doc (checkpoint on every update when present). */
+    survey?: unknown;
+  }
 >;
 
 export type ClientLogEvent =

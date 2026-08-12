@@ -3,15 +3,16 @@ import electron from 'electron'
 import esbuild from 'esbuild'
 
 const isDev = !process.argv.includes('--prod')
+const electronArgs = process.argv.slice(2).filter((arg) => arg !== '--prod')
 
 const electronRunner = (() => {
   let handle = null
   return {
     restart () {
-      console.info('Restarting Electron process.')
+      console.info('Restarting Electron process.', electronArgs)
 
       if (handle) handle.kill()
-      handle = child_process.spawn(electron, ['.'], {
+      handle = child_process.spawn(electron, ['.', ...electronArgs], {
         stdio: 'inherit'
       })
     }

@@ -18,6 +18,22 @@ interface League {
   text: string;
 }
 
+const PERMANENT_LEAGUE =
+  /^(Standard|Hardcore|標準模式|專家模式)$/i;
+const HARDCORE_LEAGUE = /^(HC\s|Hardcore|專家)/i;
+
+/** Current temporary softcore challenge (e.g. "Runes of Aldur"), not Standard/HC. */
+export function pickSoftcoreChallengeLeague(
+  list: readonly { id: string }[],
+): string | undefined {
+  const scChallenge = list.find(
+    (l) => !PERMANENT_LEAGUE.test(l.id) && !HARDCORE_LEAGUE.test(l.id),
+  );
+  if (scChallenge) return scChallenge.id;
+  const soft = list.find((l) => !HARDCORE_LEAGUE.test(l.id));
+  return soft?.id ?? list[0]?.id;
+}
+
 export const useLeagues = createGlobalState(() => {
   const isLoading = shallowRef(false);
   const error = shallowRef<string | null>(null);
@@ -62,13 +78,22 @@ export const useLeagues = createGlobalState(() => {
       const leagueIsAlive = tradeLeagues.value.some(
         (league) => league.id === selectedId.value,
       );
-      if (!leagueIsAlive && !isPrivateLeague(selectedId.value ?? "")) {
-        if (tradeLeagues.value.length > 2) {
-          const TMP_CHALLENGE = 2;
-          selectedId.value = tradeLeagues.value[TMP_CHALLENGE].id;
-        } else {
-          const STANDARD = 0;
-          selectedId.value = tradeLeagues.value[STANDARD].id;
+      const scChallenge = pickSoftcoreChallengeLeague(tradeLeagues.value);
+      // Prefer softcore challenge when unset, dead, or wrongly defaulted to Standard.
+      // (Old bug: length>2 picked index 2 = Standard instead of challenge SC at 0.)
+      const shouldPreferChallenge =
+        !leagueIsAlive ||
+        !selectedId.value ||
+        (!isPrivateLeague(selectedId.value) &&
+          PERMANENT_LEAGUE.test(selectedId.value) &&
+          !!scChallenge &&
+          selectedId.value !== scChallenge);
+
+      if (shouldPreferChallenge && !isPrivateLeague(selectedId.value ?? "")) {
+        if (scChallenge) {
+          selectedId.value = scChallenge;
+        } else if (tradeLeagues.value.length) {
+          selectedId.value = tradeLeagues.value[0].id;
         }
       }
     } catch (e) {

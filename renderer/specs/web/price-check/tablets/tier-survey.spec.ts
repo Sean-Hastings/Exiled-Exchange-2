@@ -50,6 +50,8 @@ describe("tier-survey-plan", () => {
       label: "blank buy",
       modIds: [],
       sellEx: 40,
+      octave: null,
+      octaveRound: null,
       updatedAt: Date.now(),
     };
     doc.observations["anchor:dump"] = {
@@ -58,6 +60,8 @@ describe("tier-survey-plan", () => {
       label: "junk/rare dump floor",
       modIds: [],
       sellEx: 8,
+      octave: null,
+      octaveRound: null,
       updatedAt: Date.now(),
     };
     const n = deferUnfinishedSplinters(doc);

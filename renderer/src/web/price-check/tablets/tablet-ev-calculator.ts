@@ -1,4 +1,9 @@
-import { TABLET_BASES, modWeightForBase } from "./mod-weights";
+import {
+  TABLET_BASES,
+  modWeightForBase,
+  weightOptsForBase,
+  type ModWeightOpts,
+} from "./mod-weights";
 import { modQualityTier, countTier } from "./mod-tiers";
 import {
   buildRareTierJudgementRegexes,
@@ -248,7 +253,10 @@ function pathRoi(net: number, cost: number): number {
 }
 
 export class TabletEVEngine {
-  constructor(private marketCache: MarketPriceCache) {}
+  constructor(
+    private marketCache: MarketPriceCache,
+    private weightOpts?: ModWeightOpts,
+  ) {}
 
   updateMarket(cache: Partial<MarketPriceCache>) {
     this.marketCache = {
@@ -277,12 +285,20 @@ export class TabletEVEngine {
     };
   }
 
+  setWeightOpts(opts?: ModWeightOpts) {
+    this.weightOpts = opts;
+  }
+
   public calculateBaseEV(baseId: string): TabletEVResult {
     const base = TABLET_BASES[baseId];
     if (!base) return emptyResult(baseId, baseId);
 
     const baseCost = measured(this.marketCache.basePrices[baseId]);
-    const recommended = recommendPolicy(this.marketCache, baseId);
+    const recommended = recommendPolicy(
+      this.marketCache,
+      baseId,
+      this.weightOpts,
+    );
 
     const blankCandidates: Array<PathEV & { strategy: BlankCraftStrategy }> = [];
     for (const blank of [
@@ -293,11 +309,16 @@ export class TabletEVEngine {
       const rarePolicy = recommended?.policy.rare ?? defaultPolicy().rare;
       const corruptPolicy =
         recommended?.policy.corrupt ?? defaultPolicy().corrupt;
-      const hit = solvePolicy(this.marketCache, baseId, {
-        blank,
-        rare: rarePolicy,
-        corrupt: corruptPolicy,
-      });
+      const hit = solvePolicy(
+        this.marketCache,
+        baseId,
+        {
+          blank,
+          rare: rarePolicy,
+          corrupt: corruptPolicy,
+        },
+        this.weightOpts,
+      );
       if (!hit) continue;
       const orb =
         blank === "Magic-Pipeline"
@@ -338,7 +359,12 @@ export class TabletEVEngine {
         rare: { S: "List", A: "List", B: "List", Trash: action },
         corrupt: { S: "List", A: "List", B: "List", Trash: "Dump" },
       };
-      const hit = solvePolicy(this.marketCache, baseId, policy);
+      const hit = solvePolicy(
+        this.marketCache,
+        baseId,
+        policy,
+        this.weightOpts,
+      );
       if (!hit) continue;
       rareCandidates.push({
         strategy: label,
@@ -359,6 +385,7 @@ export class TabletEVEngine {
         this.marketCache,
         baseId,
         defaultPolicy("Skip-Blanks"),
+        this.weightOpts,
       );
       if (hit) {
         rareCandidates.push({
@@ -464,11 +491,16 @@ export class TabletEVEngine {
 
     const baseCost = measured(this.marketCache.basePrices[baseId]);
     const dump = dumpFloorEx(this.marketCache, baseId, baseCost);
-    const recommended = recommendPolicy(this.marketCache, baseId);
+    const recommended = recommendPolicy(
+      this.marketCache,
+      baseId,
+      this.weightOpts,
+    );
     const alch = solvePolicy(
       this.marketCache,
       baseId,
       defaultPolicy("Scour-Alch"),
+      this.weightOpts,
     );
     const sales = alch?.sales;
     const measuredFrac = sales?.measuredFrac ?? 0;
@@ -502,11 +534,16 @@ export class TabletEVEngine {
       const rareSide = recommended?.policy.rare ?? defaultPolicy().rare;
       const corruptSide =
         recommended?.policy.corrupt ?? defaultPolicy().corrupt;
-      const hit = solvePolicy(this.marketCache, baseId, {
-        blank: blankStrat,
-        rare: rareSide,
-        corrupt: corruptSide,
-      });
+      const hit = solvePolicy(
+        this.marketCache,
+        baseId,
+        {
+          blank: blankStrat,
+          rare: rareSide,
+          corrupt: corruptSide,
+        },
+        this.weightOpts,
+      );
       if (!hit) continue;
       const dist =
         blankStrat === "Magic-Pipeline"
@@ -650,11 +687,11 @@ export class TabletEVEngine {
         : Number.POSITIVE_INFINITY;
 
     const totalPrefixWeight = base.allowedPrefixPool.reduce(
-      (sum, id) => sum + (modWeightForBase(baseId, id)),
+      (sum, id) => sum + (modWeightForBase(baseId, id, this.weightOpts)),
       0,
     );
     const totalSuffixWeight = base.allowedSuffixPool.reduce(
-      (sum, id) => sum + (modWeightForBase(baseId, id)),
+      (sum, id) => sum + (modWeightForBase(baseId, id, this.weightOpts)),
       0,
     );
 
@@ -669,11 +706,11 @@ export class TabletEVEngine {
 
     if (totalPrefixWeight > 0 && totalSuffixWeight > 0) {
       for (const pId of base.allowedPrefixPool) {
-        const pWeight = modWeightForBase(baseId, pId);
+        const pWeight = modWeightForBase(baseId, pId, this.weightOpts);
         if (pWeight <= 0) continue;
         const pProb = pWeight / totalPrefixWeight;
         for (const sId of base.allowedSuffixPool) {
-          const sWeight = modWeightForBase(baseId, sId);
+          const sWeight = modWeightForBase(baseId, sId, this.weightOpts);
           if (sWeight <= 0) continue;
           const comboProb = pProb * (sWeight / totalSuffixWeight);
           const measuredSale = estimateComboValue(
@@ -744,7 +781,7 @@ export class TabletEVEngine {
     const c = this.marketCache.currencyCosts;
     const alch = measured(c.alchemy);
     const a = anchors(this.marketCache);
-    const branch = magicOnePOneSBranchProbs(baseId);
+    const branch = magicOnePOneSBranchProbs(baseId, this.weightOpts);
     if (
       !branch ||
       !Number.isFinite(a.tradeDivine) ||
@@ -792,43 +829,45 @@ export class TabletEVEngine {
     pReforge /= sum;
     pMerchLo /= sum;
 
-    const outcomes: OutcomeSlice[] = [
-      {
-        kind: "jackpot",
-        label: "trade list (S-magic)",
-        prob: pTrade,
-        avgValueEx: divineList,
-        revenueEx: pTrade * divineList,
-      },
-      {
-        kind: "hit",
-        label: "merchant high (S-magic)",
-        prob: pMerchHi,
-        avgValueEx: merchantHi,
-        revenueEx: pMerchHi * merchantHi,
-      },
-      {
-        kind: "hit",
-        label: "merchant mid (A-magic)",
-        prob: pMerchMid,
-        avgValueEx: merchantMid,
-        revenueEx: pMerchMid * merchantMid,
-      },
-      {
-        kind: "trash",
-        label: "merchant low (junk magic)",
-        prob: pMerchLo,
-        avgValueEx: merchantLo,
-        revenueEx: pMerchLo * merchantLo,
-      },
-      {
-        kind: "trash",
-        label: "reforge salvage (junk)",
-        prob: pReforge,
-        avgValueEx: reforgeSalvage,
-        revenueEx: pReforge * reforgeSalvage,
-      },
-    ].filter((o) => o.prob > 1e-6);
+    const outcomes: OutcomeSlice[] = (
+      [
+        {
+          kind: "jackpot" as const,
+          label: "trade list (S-magic)",
+          prob: pTrade,
+          avgValueEx: divineList,
+          revenueEx: pTrade * divineList,
+        },
+        {
+          kind: "hit" as const,
+          label: "merchant high (S-magic)",
+          prob: pMerchHi,
+          avgValueEx: merchantHi,
+          revenueEx: pMerchHi * merchantHi,
+        },
+        {
+          kind: "hit" as const,
+          label: "merchant mid (A-magic)",
+          prob: pMerchMid,
+          avgValueEx: merchantMid,
+          revenueEx: pMerchMid * merchantMid,
+        },
+        {
+          kind: "trash" as const,
+          label: "merchant low (junk magic)",
+          prob: pMerchLo,
+          avgValueEx: merchantLo,
+          revenueEx: pMerchLo * merchantLo,
+        },
+        {
+          kind: "trash" as const,
+          label: "reforge salvage (junk)",
+          prob: pReforge,
+          avgValueEx: reforgeSalvage,
+          revenueEx: pReforge * reforgeSalvage,
+        },
+      ] satisfies OutcomeSlice[]
+    ).filter((o) => o.prob > 1e-6);
 
     return {
       outcomes,
@@ -939,7 +978,11 @@ export class TabletEVEngine {
     truncated: number;
     policyLabel: string;
   } {
-    const recommended = recommendPolicy(this.marketCache, baseId);
+    const recommended = recommendPolicy(
+      this.marketCache,
+      baseId,
+      this.weightOpts,
+    );
     const policy =
       recommended?.policy ?? defaultPolicy("Skip-Blanks");
     // Prefer the craft policy even when EV says Skip — sim the best craft path
@@ -954,6 +997,7 @@ export class TabletEVEngine {
       baseId,
       simPolicy,
       iterations,
+      weightOptsForBase(baseId, this.weightOpts),
     );
     return {
       ...result,
@@ -969,11 +1013,11 @@ export class TabletEVEngine {
     const baseCost = measured(this.marketCache.basePrices[baseId]);
     const dump = dumpFloorEx(this.marketCache, baseId, baseCost);
     const totalPrefixWeight = base.allowedPrefixPool.reduce(
-      (sum, id) => sum + (modWeightForBase(baseId, id)),
+      (sum, id) => sum + (modWeightForBase(baseId, id, this.weightOpts)),
       0,
     );
     const totalSuffixWeight = base.allowedSuffixPool.reduce(
-      (sum, id) => sum + (modWeightForBase(baseId, id)),
+      (sum, id) => sum + (modWeightForBase(baseId, id, this.weightOpts)),
       0,
     );
 
@@ -983,11 +1027,11 @@ export class TabletEVEngine {
 
     if (totalPrefixWeight > 0 && totalSuffixWeight > 0) {
       for (const pId of base.allowedPrefixPool) {
-        const pWeight = modWeightForBase(baseId, pId);
+        const pWeight = modWeightForBase(baseId, pId, this.weightOpts);
         if (pWeight <= 0) continue;
         const pProb = pWeight / totalPrefixWeight;
         for (const sId of base.allowedSuffixPool) {
-          const sWeight = modWeightForBase(baseId, sId);
+          const sWeight = modWeightForBase(baseId, sId, this.weightOpts);
           if (sWeight <= 0) continue;
           const comboProb = pProb * (sWeight / totalSuffixWeight);
           const measuredSale = estimateComboValue(
@@ -1087,7 +1131,7 @@ export class TabletEVEngine {
     empiricalComboEV: number,
   ): PathEV & { strategy: BlankCraftStrategy } {
     const setup = transmute + aug;
-    const branch = magicOnePOneSBranchProbs(baseId);
+    const branch = magicOnePOneSBranchProbs(baseId, this.weightOpts);
     if (!branch) {
       return {
         strategy: "Magic-Pipeline",

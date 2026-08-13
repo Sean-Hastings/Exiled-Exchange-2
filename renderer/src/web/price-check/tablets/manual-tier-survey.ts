@@ -8,7 +8,14 @@ import type {
 } from "./tier-survey-types";
 import { TIER_SURVEY_REVISION } from "./tier-survey-types";
 
-/** Default calibration base for the hand-entry survey (market-dense). */
+/**
+ * Default calibration base for the hand-entry survey (market-dense).
+ *
+ * Soft-deprecated as the primary price-entry UX — prefer TierUncertaintyPanel
+ * for “which mods are we least sure how to tier?”. Automated Breach /
+ * tier-survey-* paths are unchanged. Anchors (blank/dump) remain available
+ * here as a secondary path.
+ */
 export const MANUAL_SURVEY_BASE_ID = "temple_tablet";
 
 const STORAGE_KEY = "ee2-manual-temple-tier-survey-v1";

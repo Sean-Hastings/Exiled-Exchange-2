@@ -14,6 +14,10 @@ import type {
  * hit rates under-estimate rather than over-estimate — **except** Temple
  * `weightOverrides`, fitted from post-0.5 local craft samples.
  *
+ * Experiential roll log → Beta display CI + MLE → IPS fitter
+ * (`weight-fitter.ts` / `roll-seen-*`) produces runtime overrides. Promote to
+ * committed `weightOverrides` only after human review (never auto-write).
+ *
  * Community craft rates for other bases live in {@link WEIGHT_BENCH} until
  * fitted the same way. Do not promote bench rows into overrides without a
  * clean post-0.5 slam sample.
@@ -1707,13 +1711,83 @@ export function findTabletBaseByName(name: string): TabletBaseDefinition | null 
   return null;
 }
 
-/** Affix weight for EV rolls — honors per-base empirical overrides. */
-export function modWeightForBase(baseId: string, modId: string): number {
+/**
+ * Optional runtime fit / mixture overrides (do not mutate TABLET_BASES).
+ * Prefer `runtimeOverridesByBase` when computing multiple bases together —
+ * never merge cross-base maps (shared mod ids must not stomp).
+ */
+export interface ModWeightOpts {
+  /** Flat overrides for a single-base computation. */
+  runtimeOverrides?: Record<string, number>;
+  /** Per-base overrides; `modWeightForBase` uses only `baseId`'s map. */
+  runtimeOverridesByBase?: Record<string, Record<string, number>>;
+}
+
+/** Resolve the override map that applies to one base (no cross-base merge). */
+export function runtimeOverridesForOpts(
+  baseId: string,
+  opts?: ModWeightOpts,
+): Record<string, number> | undefined {
+  const byBase = opts?.runtimeOverridesByBase?.[baseId];
+  if (byBase && Object.keys(byBase).length) return byBase;
+  if (opts?.runtimeOverrides && Object.keys(opts.runtimeOverrides).length) {
+    return opts.runtimeOverrides;
+  }
+  return undefined;
+}
+
+/** Single-base ModWeightOpts view (for MDP / risk / simulate). */
+export function weightOptsForBase(
+  baseId: string,
+  opts?: ModWeightOpts,
+): ModWeightOpts | undefined {
+  const o = runtimeOverridesForOpts(baseId, opts);
+  return o ? { runtimeOverrides: o } : undefined;
+}
+
+/**
+ * Affix weight for EV rolls.
+ * Order: runtimeOverrides (this base) → committed weightOverrides → seed.
+ * Zero overrides exclude the mod from the pool (fitted zero-hit).
+ */
+export function modWeightForBase(
+  baseId: string,
+  modId: string,
+  opts?: ModWeightOpts,
+): number {
+  const runtimeMap = runtimeOverridesForOpts(baseId, opts);
+  if (
+    runtimeMap &&
+    Object.prototype.hasOwnProperty.call(runtimeMap, modId)
+  ) {
+    const runtime = runtimeMap[modId];
+    if (runtime != null && Number.isFinite(runtime)) {
+      return Math.max(0, runtime);
+    }
+  }
   const override = TABLET_BASES[baseId]?.weightOverrides?.[modId];
-  if (override != null && Number.isFinite(override) && override > 0) {
-    return override;
+  if (override != null && Number.isFinite(override)) {
+    return Math.max(0, override);
   }
   return TABLET_MOD_WEIGHTS[modId]?.weight ?? 0;
+}
+
+/**
+ * Stable fingerprint of the merged weight view for chaos cache isolation.
+ * Hash of sorted `[modId, weight]` pairs for the base's affix pools.
+ */
+export function tabletWeightFingerprint(
+  baseId: string,
+  opts?: ModWeightOpts,
+): string {
+  const base = TABLET_BASES[baseId];
+  if (!base) return "none";
+  const ids = [...base.allowedPrefixPool, ...base.allowedSuffixPool].sort();
+  const parts: string[] = [];
+  for (const id of ids) {
+    parts.push(`${id}:${modWeightForBase(baseId, id, opts)}`);
+  }
+  return parts.join("|");
 }
 
 export function getHighValueModsForBase(

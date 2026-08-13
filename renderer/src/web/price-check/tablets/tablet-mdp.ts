@@ -7,7 +7,12 @@
  * Chaos = PoE2 one-affix replace (random slot → new mod from that side's
  * pool). Reforge still uses a full alchemy-style 2p+2s redraw.
  */
-import { TABLET_BASES, modWeightForBase } from "./mod-weights";
+import {
+  TABLET_BASES,
+  modWeightForBase,
+  tabletWeightFingerprint,
+  type ModWeightOpts,
+} from "./mod-weights";
 import {
   SIDE_SCORE,
   classifyModCombo,
@@ -330,9 +335,10 @@ export function candidatePolicies(): CraftPolicy[] {
 function weightedUnorderedPairs(
   baseId: string,
   pool: string[],
+  wOpts?: ModWeightOpts,
 ): Array<{ a: string; b: string; prob: number }> {
   const items = pool
-    .map((id) => ({ id, w: modWeightForBase(baseId, id) }))
+    .map((id) => ({ id, w: modWeightForBase(baseId, id, wOpts) }))
     .filter((x) => x.w > 0);
   const W = items.reduce((s, x) => s + x.w, 0);
   if (W <= 0 || items.length < 2) return [];
@@ -357,27 +363,36 @@ function weightedUnorderedPairs(
 function accumulateRare2p2sDist(
   baseId: string,
   onTier: (tier: RareTier, prob: number) => void,
+  wOpts?: ModWeightOpts,
 ) {
   const base = TABLET_BASES[baseId];
   if (!base) return;
-  const prefPairs = weightedUnorderedPairs(baseId, base.allowedPrefixPool);
-  const sufPairs = weightedUnorderedPairs(baseId, base.allowedSuffixPool);
+  const prefPairs = weightedUnorderedPairs(
+    baseId,
+    base.allowedPrefixPool,
+    wOpts,
+  );
+  const sufPairs = weightedUnorderedPairs(
+    baseId,
+    base.allowedSuffixPool,
+    wOpts,
+  );
   if (!prefPairs.length || !sufPairs.length) {
     // Degenerate tiny pools: fall back to 1p+1s
     const totalP = base.allowedPrefixPool.reduce(
-      (s, id) => s + modWeightForBase(baseId, id),
+      (s, id) => s + modWeightForBase(baseId, id, wOpts),
       0,
     );
     const totalS = base.allowedSuffixPool.reduce(
-      (s, id) => s + modWeightForBase(baseId, id),
+      (s, id) => s + modWeightForBase(baseId, id, wOpts),
       0,
     );
     if (totalP <= 0 || totalS <= 0) return;
     for (const pId of base.allowedPrefixPool) {
-      const pw = modWeightForBase(baseId, pId);
+      const pw = modWeightForBase(baseId, pId, wOpts);
       if (pw <= 0) continue;
       for (const sId of base.allowedSuffixPool) {
-        const sw = modWeightForBase(baseId, sId);
+        const sw = modWeightForBase(baseId, sId, wOpts);
         if (sw <= 0) continue;
         onTier(modsToRareTier([pId, sId]), (pw / totalP) * (sw / totalS));
       }
@@ -458,6 +473,7 @@ function chaosReplacementByQuality(
   baseId: string,
   pool: string[],
   keepId: string,
+  wOpts?: ModWeightOpts,
 ): Record<ModQualityTier, number> {
   const out: Record<ModQualityTier, number> = {
     S: 0,
@@ -467,7 +483,7 @@ function chaosReplacementByQuality(
   };
   for (const id of pool) {
     if (id === keepId) continue;
-    const w = modWeightForBase(baseId, id);
+    const w = modWeightForBase(baseId, id, wOpts);
     if (w > 0) out[modQualityTier(id)] += w;
   }
   return out;
@@ -487,7 +503,10 @@ export function clearChaosTransitionCache() {
  * Magic T+A = one prefix + one suffix from separate pools (independent rolls).
  * Returns branch probs for strat_reco regal/alch routing.
  */
-export function magicOnePOneSBranchProbs(baseId: string): {
+export function magicOnePOneSBranchProbs(
+  baseId: string,
+  wOpts?: ModWeightOpts,
+): {
   pHasS: number;
   pHasAOnly: number;
   pJunk: number;
@@ -507,7 +526,7 @@ export function magicOnePOneSBranchProbs(baseId: string): {
     };
     let W = 0;
     for (const id of pool) {
-      const w = modWeightForBase(baseId, id);
+      const w = modWeightForBase(baseId, id, wOpts);
       if (w <= 0) continue;
       W += w;
       shares[modQualityTier(id)] += w;
@@ -545,18 +564,32 @@ export function magicOnePOneSBranchProbs(baseId: string): {
  *
  * Replacement outcomes are bucketed by mod quality (same quality → same
  * rare tier), so we never enumerate every pool id per slot.
+ *
+ * Cache key: `(baseId, weightFingerprint)` so runtime / mixture overrides
+ * do not collide with the committed point path.
  */
 export function buildChaosOneAffixTransitions(
   baseId: string,
+  wOpts?: ModWeightOpts,
 ): Record<RareTier, Record<RareTier, number>> {
-  const cached = chaosFromCache.get(baseId);
+  const fp = tabletWeightFingerprint(baseId, wOpts);
+  const cacheKey = `${baseId}::${fp}`;
+  const cached = chaosFromCache.get(cacheKey);
   if (cached) return cached;
 
   const base = TABLET_BASES[baseId];
   if (!base) return identityChaosFrom();
 
-  const prefPairs = weightedUnorderedPairs(baseId, base.allowedPrefixPool);
-  const sufPairs = weightedUnorderedPairs(baseId, base.allowedSuffixPool);
+  const prefPairs = weightedUnorderedPairs(
+    baseId,
+    base.allowedPrefixPool,
+    wOpts,
+  );
+  const sufPairs = weightedUnorderedPairs(
+    baseId,
+    base.allowedSuffixPool,
+    wOpts,
+  );
   const accum = emptyChaosFrom();
   const massFrom = emptyDist();
 
@@ -568,7 +601,7 @@ export function buildChaosOneAffixTransitions(
     pool: string[],
     applyQuality: (q: ModQualityTier) => RareTier,
   ) => {
-    const byQ = chaosReplacementByQuality(baseId, pool, keepId);
+    const byQ = chaosReplacementByQuality(baseId, pool, keepId, wOpts);
     const W = QUALITY_TIERS.reduce((s, q) => s + byQ[q], 0);
     if (!(W > 0)) return;
     const share = configProb * slotProb;
@@ -582,25 +615,25 @@ export function buildChaosOneAffixTransitions(
 
   if (!prefPairs.length || !sufPairs.length) {
     const totalP = base.allowedPrefixPool.reduce(
-      (s, id) => s + modWeightForBase(baseId, id),
+      (s, id) => s + modWeightForBase(baseId, id, wOpts),
       0,
     );
     const totalS = base.allowedSuffixPool.reduce(
-      (s, id) => s + modWeightForBase(baseId, id),
+      (s, id) => s + modWeightForBase(baseId, id, wOpts),
       0,
     );
     if (!(totalP > 0 && totalS > 0)) {
       const id = identityChaosFrom();
-      chaosFromCache.set(baseId, id);
+      chaosFromCache.set(cacheKey, id);
       return id;
     }
 
     for (const pId of base.allowedPrefixPool) {
-      const pw = modWeightForBase(baseId, pId);
+      const pw = modWeightForBase(baseId, pId, wOpts);
       if (pw <= 0) continue;
       const pQ = modQualityTier(pId);
       for (const sId of base.allowedSuffixPool) {
-        const sw = modWeightForBase(baseId, sId);
+        const sw = modWeightForBase(baseId, sId, wOpts);
         if (sw <= 0) continue;
         const sQ = modQualityTier(sId);
         const configProb = (pw / totalP) * (sw / totalS);
@@ -651,7 +684,7 @@ export function buildChaosOneAffixTransitions(
       out[from][to] = accum[from][to] / m;
     }
   }
-  chaosFromCache.set(baseId, out);
+  chaosFromCache.set(cacheKey, out);
   return out;
 }
 
@@ -663,6 +696,7 @@ function accumulateMeasuredPairSales(
   baseId: string,
   market: MarketPriceCache,
   onMeasured: (tier: RareTier, prob: number, sale: number) => void,
+  wOpts?: ModWeightOpts,
 ): { globalMeasuredProb: number; globalProb: number } {
   const base = TABLET_BASES[baseId];
   let globalMeasuredProb = 0;
@@ -670,21 +704,21 @@ function accumulateMeasuredPairSales(
   if (!base) return { globalMeasuredProb, globalProb };
 
   const totalP = base.allowedPrefixPool.reduce(
-    (s, id) => s + modWeightForBase(baseId, id),
+    (s, id) => s + modWeightForBase(baseId, id, wOpts),
     0,
   );
   const totalS = base.allowedSuffixPool.reduce(
-    (s, id) => s + modWeightForBase(baseId, id),
+    (s, id) => s + modWeightForBase(baseId, id, wOpts),
     0,
   );
   if (totalP <= 0 || totalS <= 0) return { globalMeasuredProb, globalProb };
 
   for (const pId of base.allowedPrefixPool) {
-    const pw = modWeightForBase(baseId, pId);
+    const pw = modWeightForBase(baseId, pId, wOpts);
     if (pw <= 0) continue;
     const pProb = pw / totalP;
     for (const sId of base.allowedSuffixPool) {
-      const sw = modWeightForBase(baseId, sId);
+      const sw = modWeightForBase(baseId, sId, wOpts);
       if (sw <= 0) continue;
       const prob = pProb * (sw / totalS);
       globalProb += prob;
@@ -763,6 +797,7 @@ export function priceTiersFromMeasured(
 export function buildTierSaleTable(
   market: MarketPriceCache,
   baseId: string,
+  opts?: ModWeightOpts,
 ): TierSaleTable | null {
   const base = TABLET_BASES[baseId];
   if (!base) return null;
@@ -778,10 +813,14 @@ export function buildTierSaleTable(
   const regal = measured(c.regal);
 
   const alchDist = emptyDist();
-  accumulateRare2p2sDist(baseId, (tier, prob) => {
-    alchDist[tier] += prob;
-  });
-  const chaosFrom = buildChaosOneAffixTransitions(baseId);
+  accumulateRare2p2sDist(
+    baseId,
+    (tier, prob) => {
+      alchDist[tier] += prob;
+    },
+    opts,
+  );
+  const chaosFrom = buildChaosOneAffixTransitions(baseId, opts);
 
   const measuredSales: Record<RareTier, number[]> = {
     S: [],
@@ -796,6 +835,7 @@ export function buildTierSaleTable(
     (tier, _prob, sale) => {
       measuredSales[tier].push(sale);
     },
+    opts,
   );
 
   const measuredFrac =
@@ -815,7 +855,7 @@ export function buildTierSaleTable(
   // Magic-pipeline → rare tier dist (T+A = 1 prefix + 1 suffix, separate pools)
   let magicDist = emptyDist();
   let magicOrbCost = Number.NaN;
-  const magicBranch = magicOnePOneSBranchProbs(baseId);
+  const magicBranch = magicOnePOneSBranchProbs(baseId, opts);
   if (magicBranch) {
     const { pHasS, pHasAOnly, pJunk } = magicBranch;
 
@@ -1001,8 +1041,9 @@ export function solvePolicy(
   market: MarketPriceCache,
   baseId: string,
   policy: CraftPolicy,
+  wOpts?: ModWeightOpts,
 ): MdpSolveResult | null {
-  const sales = buildTierSaleTable(market, baseId);
+  const sales = buildTierSaleTable(market, baseId, wOpts);
   if (!sales) return null;
 
   const { rareV, corruptV, note } = solveRareValues(sales, policy);
@@ -1074,18 +1115,24 @@ export function solvePolicy(
 export function recommendPolicy(
   market: MarketPriceCache,
   baseId: string,
+  wOpts?: ModWeightOpts,
 ): MdpSolveResult | null {
-  const sales = buildTierSaleTable(market, baseId);
+  const sales = buildTierSaleTable(market, baseId, wOpts);
   if (!sales) return null;
 
   const opt = solveOptimalRarePolicy(sales);
   let best: MdpSolveResult | null = null;
   for (const blank of candidateBlankStrategies()) {
-    const hit = solvePolicy(market, baseId, {
-      blank,
-      rare: opt.rare,
-      corrupt: opt.corrupt,
-    });
+    const hit = solvePolicy(
+      market,
+      baseId,
+      {
+        blank,
+        rare: opt.rare,
+        corrupt: opt.corrupt,
+      },
+      wOpts,
+    );
     if (!hit) continue;
     if (!Number.isFinite(hit.whiteEV) && blank !== "Skip-Blanks") continue;
     if (!best) {
@@ -1135,7 +1182,7 @@ export function simulatePolicy(
   baseId: string,
   policy: CraftPolicy,
   iterations = 1000,
-  opts?: { maxChaosPerItem?: number },
+  opts?: { maxChaosPerItem?: number; runtimeOverrides?: Record<string, number> },
 ): {
   hits: number;
   hitRate: number;
@@ -1144,7 +1191,10 @@ export function simulatePolicy(
   avgChaosRolls: number;
   truncated: number;
 } {
-  const sales = buildTierSaleTable(market, baseId);
+  const wOpts: ModWeightOpts | undefined = opts?.runtimeOverrides
+    ? { runtimeOverrides: opts.runtimeOverrides }
+    : undefined;
+  const sales = buildTierSaleTable(market, baseId, wOpts);
   if (!sales || policy.blank === "Skip-Blanks") {
     return {
       hits: 0,

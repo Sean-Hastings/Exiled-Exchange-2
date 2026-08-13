@@ -15,7 +15,13 @@ import { TIER_SURVEY_REVISION } from "./tier-survey-types";
 import { applyTempleManualSurveyMarket } from "./temple-manual-market";
 
 const STORAGE_KEY = "ee2-tablet-market-cache";
+/** Normative buy-count B key (mean of cheapest B). */
+const BUY_COUNT_B_KEY = "ee2-tablet-buy-count-b";
+/** Legacy patience key — read-only migration fallback; never write. */
 const BUY_PATIENCE_KEY = "ee2-tablet-buy-patience-depth";
+const CRAFT_COUNT_C_KEY = "ee2-tablet-craft-count-c";
+
+const CRAFT_COUNT_C_DEFAULT = 20;
 
 interface PersistedMarket {
   revision: number;
@@ -27,7 +33,11 @@ interface PersistedMarket {
 export interface TabletMarketSyncOpts {
   /** When set, only re-price these bases and merge into the existing cache. */
   baseIds?: string[];
-  /** Cold-market buy depth (patience). Hot books still use ~10 after flow probe. */
+  /** Buy count B — mean of cheapest B asks for EV blank cost. */
+  buyCountB?: number;
+  /**
+   * @deprecated Use buyCountB. Kept as a read alias for one revision.
+   */
   coldBuyDepth?: number;
   /** Re-query delay for hot/cold detection (ms). */
   flowProbeMs?: number;
@@ -35,26 +45,85 @@ export interface TabletMarketSyncOpts {
   flowProbe?: boolean;
 }
 
-function loadColdBuyDepth(): number {
+function clampBuyB(n: number): number {
+  return Math.max(5, Math.min(50, Math.round(n)));
+}
+
+function clampCraftC(n: number): number {
+  return Math.max(1, Math.min(500, Math.round(n)));
+}
+
+function loadBuyCountB(): number {
   try {
-    const raw = localStorage.getItem(BUY_PATIENCE_KEY);
-    if (!raw) return BUY_DEPTH_COLD_DEFAULT;
-    const n = Number(raw);
-    if (!Number.isFinite(n)) return BUY_DEPTH_COLD_DEFAULT;
-    return Math.max(5, Math.min(50, Math.round(n)));
+    const raw = localStorage.getItem(BUY_COUNT_B_KEY);
+    if (raw) {
+      const n = Number(raw);
+      if (Number.isFinite(n)) return clampBuyB(n);
+    }
+    // Migrate once from legacy patience key (read-only thereafter)
+    const legacy = localStorage.getItem(BUY_PATIENCE_KEY);
+    if (legacy) {
+      const n = Number(legacy);
+      if (Number.isFinite(n)) {
+        const migrated = clampBuyB(n);
+        try {
+          localStorage.setItem(BUY_COUNT_B_KEY, String(migrated));
+        } catch {
+          /* ignore */
+        }
+        return migrated;
+      }
+    }
+    return BUY_DEPTH_COLD_DEFAULT;
   } catch {
     return BUY_DEPTH_COLD_DEFAULT;
   }
 }
 
-/** Cold-market patience depth — persisted; hot markets still buy near depth 10. */
-export const tabletColdBuyDepth = shallowRef(loadColdBuyDepth());
-
-export function setTabletColdBuyDepth(depth: number) {
-  const next = Math.max(5, Math.min(50, Math.round(depth)));
-  tabletColdBuyDepth.value = next;
+function loadCraftCountC(): number {
   try {
-    localStorage.setItem(BUY_PATIENCE_KEY, String(next));
+    const raw = localStorage.getItem(CRAFT_COUNT_C_KEY);
+    if (!raw) return CRAFT_COUNT_C_DEFAULT;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return CRAFT_COUNT_C_DEFAULT;
+    return clampCraftC(n);
+  } catch {
+    return CRAFT_COUNT_C_DEFAULT;
+  }
+}
+
+/** Buy count B — mean of cheapest B; persisted under ee2-tablet-buy-count-b. */
+export const tabletBuyCountB = shallowRef(loadBuyCountB());
+
+/** Craft count C — batch risk size only; does not enter buy price. */
+export const tabletCraftCountC = shallowRef(loadCraftCountC());
+
+/**
+ * @deprecated Alias of tabletBuyCountB for one revision.
+ */
+export const tabletColdBuyDepth = tabletBuyCountB;
+
+export function setTabletBuyCountB(depth: number) {
+  const next = clampBuyB(depth);
+  tabletBuyCountB.value = next;
+  try {
+    localStorage.setItem(BUY_COUNT_B_KEY, String(next));
+    // Do not write the legacy patience key (§2.5).
+  } catch {
+    /* ignore */
+  }
+}
+
+/** @deprecated Use setTabletBuyCountB */
+export function setTabletColdBuyDepth(depth: number) {
+  setTabletBuyCountB(depth);
+}
+
+export function setTabletCraftCountC(count: number) {
+  const next = clampCraftC(count);
+  tabletCraftCountC.value = next;
+  try {
+    localStorage.setItem(CRAFT_COUNT_C_KEY, String(next));
   } catch {
     /* ignore */
   }
@@ -177,11 +246,14 @@ export async function ensureTabletMarketSynced(
       detail: label,
     };
     try {
+      const buyCountB =
+        opts?.buyCountB ?? opts?.coldBuyDepth ?? tabletBuyCountB.value;
       const result = await syncTabletMarketFromTrade({
         combosPerBase: 8,
         baseIds,
         seedMarket: partial ? tabletMarketCache.value : undefined,
-        coldBuyDepth: opts?.coldBuyDepth ?? tabletColdBuyDepth.value,
+        buyCountB,
+        coldBuyDepth: buyCountB,
         flowProbeMs: opts?.flowProbeMs,
         flowProbe: opts?.flowProbe,
         isCancelled: () => gen !== syncGeneration,

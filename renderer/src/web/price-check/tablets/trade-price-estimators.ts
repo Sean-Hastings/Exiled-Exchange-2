@@ -176,7 +176,8 @@ export function filterDustBuyListings(
 
 /**
  * Buy price: nth cheapest after exalt sort.
- * Hot markets use a shallow depth (~10); cold markets use patience depth.
+ * Kept for flow-probe / debug “buy@N” labels only — EV/`basePrices` use
+ * {@link estimateBuyPriceMeanOfCheapestEx}.
  */
 export function estimateBuyPriceEx(
   listings: PricedListing[],
@@ -208,6 +209,76 @@ export function buyEstimateNote(sampleSize: number, n = BUY_DEPTH_N): string {
   return `p~35% (n=${sampleSize}→@${depth})`;
 }
 
+/**
+ * Effective mean-of-cheapest count for EV blank cost (not legacy max(HOT,min(B,25))).
+ * hot → min(B,10); cold → B; warm/unknown → min(B,25).
+ */
+export function effectiveBuyCountForRegime(
+  regime: MarketFlowRegime,
+  buyCountB: number,
+): number {
+  const B = Math.max(5, Math.min(50, Math.round(buyCountB)));
+  if (regime === "hot") return Math.min(B, BUY_DEPTH_HOT);
+  if (regime === "cold") return B;
+  return Math.min(B, BUY_DEPTH_N);
+}
+
+/**
+ * EV / market `basePrices` blank unit cost: mean of the cheapest B asks.
+ * Thin books (n < 6): median. No ~35% mid-book heuristic.
+ * When 6 ≤ n < B: mean of all asks (k = n).
+ */
+export function estimateBuyPriceMeanOfCheapestEx(
+  listings: PricedListing[],
+  B: number,
+): number | null {
+  const sorted = listings
+    .map((l) => l.priceEx)
+    .filter((p) => Number.isFinite(p) && p > 0)
+    .sort((a, b) => a - b);
+  if (!sorted.length) return null;
+
+  if (sorted.length < 6) {
+    return sorted[Math.floor((sorted.length - 1) / 2)];
+  }
+
+  const depth = Math.max(1, Math.round(B));
+  const k = Math.min(depth, sorted.length);
+  let sum = 0;
+  for (let i = 0; i < k; i++) sum += sorted[i]!;
+  return sum / k;
+}
+
+/** Status / debug notes for the mean-of-B blank-cost path. */
+export function buyMeanEstimateNote(
+  sampleSize: number,
+  buyCountB: number,
+  regime?: MarketFlowRegime,
+): string {
+  if (!sampleSize) return "empty";
+  if (sampleSize < 6) return `median (n=${sampleSize})`;
+
+  const B = Math.max(5, Math.min(50, Math.round(buyCountB)));
+  // Undefined regime → unknown (= warm path: min(B,25)), not cold/full-B.
+  const effectiveRegime: MarketFlowRegime = regime ?? "unknown";
+  const kEff = effectiveBuyCountForRegime(effectiveRegime, B);
+  const k = Math.min(kEff, sampleSize);
+
+  if (effectiveRegime === "hot") {
+    return B <= BUY_DEPTH_HOT && k === kEff
+      ? `mean@hot10`
+      : `mean@min(B,10)`;
+  }
+  if (effectiveRegime === "cold") {
+    return k < B ? `mean@min(B,${sampleSize})` : `mean@B`;
+  }
+  // warm / unknown
+  return kEff < B || k < kEff ? `mean@min(B,25)` : `mean@warm25`;
+}
+
+/**
+ * Probe / debug depth labels. EV blank cost uses {@link effectiveBuyCountForRegime}.
+ */
 export function buyDepthForRegime(
   regime: MarketFlowRegime,
   coldDepth = BUY_DEPTH_COLD_DEFAULT,

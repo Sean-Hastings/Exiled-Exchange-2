@@ -3,7 +3,9 @@ import { createEmptyMarketCache } from "@/web/price-check/tablets/default-market
 import { TABLET_BASES } from "@/web/price-check/tablets/mod-weights";
 import type { MarketPriceCache } from "@/web/price-check/tablets/tablet-ev-calculator";
 import {
+  buildChaosOneAffixTransitions,
   buildTierSaleTable,
+  clearChaosTransitionCache,
   defaultPolicy,
   magicOnePOneSBranchProbs,
   recommendPolicy,
@@ -209,5 +211,32 @@ describe("tablet-mdp", () => {
       1,
       9,
     );
+  });
+
+  it("chaos cache isolates runtime weight fingerprints", () => {
+    clearChaosTransitionCache();
+    const a = buildChaosOneAffixTransitions("temple_tablet");
+    const b = buildChaosOneAffixTransitions("temple_tablet", {
+      runtimeOverrides: { temple_crystal_t1: 50_000 },
+    });
+    const c = buildChaosOneAffixTransitions("temple_tablet");
+    // Point path without overrides stays bit-identical to first build
+    expect(c.Trash.Trash).toBe(a.Trash.Trash);
+    // Runtime override must change chaos transitions (fingerprint isolation)
+    const l1 =
+      Math.abs(a.Trash.S - b.Trash.S) +
+      Math.abs(a.Trash.A - b.Trash.A) +
+      Math.abs(a.Trash.B - b.Trash.B) +
+      Math.abs(a.Trash.Trash - b.Trash.Trash);
+    expect(l1).toBeGreaterThan(1e-6);
+  });
+
+  it("point path buildTierSaleTable is unchanged without runtime overrides", () => {
+    const market = measuredFixture();
+    const a = buildTierSaleTable(market, "breach_tablet");
+    const b = buildTierSaleTable(market, "breach_tablet", undefined);
+    expect(a!.alchDist.S).toBe(b!.alchDist.S);
+    expect(a!.alchDist.Trash).toBe(b!.alchDist.Trash);
+    expect(a!.chaosFrom.Trash.S).toBe(b!.chaosFrom.Trash.S);
   });
 });

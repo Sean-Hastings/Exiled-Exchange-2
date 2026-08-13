@@ -11,6 +11,12 @@
       </div>
     </div>
 
+    <div class="text-amber-200/80 leading-snug">
+      Soft-deprecated as primary price entry — prefer Tier Uncertainty for
+      ranking mods; anchors (blank/dump) still useful here. Auto Breach survey
+      is unchanged.
+    </div>
+
     <div class="text-gray-400 leading-snug">
       On trade: set <b class="text-gray-200">Type</b> + filter as shown → glance
       at liquid asks → type the exalt price

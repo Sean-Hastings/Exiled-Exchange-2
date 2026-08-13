@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   BUY_DEPTH_N,
   buyDepthForRegime,
+  buyMeanEstimateNote,
   classifyMarketFlow,
+  effectiveBuyCountForRegime,
   estimateBuyPriceEx,
+  estimateBuyPriceMeanOfCheapestEx,
   estimateSellPriceEx,
   filterBuyListings,
   filterDustBuyListings,
@@ -58,13 +61,12 @@ describe("trade-price-estimators", () => {
   });
 
   it("buy ignores multi-million outliers via prefilter", () => {
-    // ≥50 kept → classic buy@25; outlier must not skew depth
     const listings = [
       ...Array.from({ length: 60 }, (_, i) => ({ priceEx: 80 + i })),
       { priceEx: 120_000_000 },
     ];
     const kept = filterBuyListings(listings);
-    expect(estimateBuyPriceEx(kept, 25)).toBe(104); // 80..139 → index 24 = 104
+    expect(estimateBuyPriceEx(kept, 25)).toBe(104);
   });
 
   it("filters dust asks before buy depth", () => {
@@ -86,22 +88,19 @@ describe("trade-price-estimators", () => {
     expect(kept.map((l) => l.priceEx)).toEqual([90, 100, 110, 120, 130]);
   });
 
-  it("buy uses nth cheapest when book is deep (after conversion)", () => {
+  it("legacy buy uses nth cheapest when book is deep (after conversion)", () => {
     const listings = [
-      { priceEx: listingAmountToExalt(1, "chaos", fx)! }, // 45
+      { priceEx: listingAmountToExalt(1, "chaos", fx)! },
       { priceEx: listingAmountToExalt(50, "exalted", fx)! },
       ...Array.from({ length: 60 }, (_, i) => ({
         priceEx: 60 + i,
       })),
     ];
-    // 62 listings ≥ 2*25 → classic buy@25
-    // sorted: 45, 50, 60..119 → index 24 = 60+(24-2)=82
     expect(estimateBuyPriceEx(listings, 25)).toBe(82);
     expect(estimateBuyPriceEx(listings, 10)).toBe(67);
   });
 
-  it("buy uses ~35% depth on thin converted books (not buy@25 into ask wall)", () => {
-    // Mirrors dump2: ~29 usable asks, buy@25 would hit 1div
+  it("legacy buy keeps ~35% depth on thin converted books", () => {
     const listings = [
       { priceEx: 20 },
       { priceEx: 20 },
@@ -109,7 +108,6 @@ describe("trade-price-estimators", () => {
       ...Array.from({ length: 6 }, () => ({ priceEx: 785 })),
       { priceEx: 1570 },
     ];
-    // n=23, depth=max(3,floor(23*0.35))=8 → index 7
     const price = estimateBuyPriceEx(listings, 25);
     expect(price).toBeLessThan(400);
     expect(price).toBeGreaterThan(50);
@@ -117,17 +115,68 @@ describe("trade-price-estimators", () => {
 
   it("buy uses median on very thin books (not the ask wall)", () => {
     const listings = [{ priceEx: 50 }, { priceEx: 80 }, { priceEx: 900 }];
-    // depth = max(3, floor(3*0.35))=3 → index 2 = 900... hmm
-    // With only 3 listings, depth=3 picks the max. Prefer lower.
-    // Actually floor(3*0.35)=1, max(3,1)=3 → still 900.
-    // Need depth to allow going below length when small.
     expect(estimateBuyPriceEx(listings, 25)).toBe(80);
+    expect(estimateBuyPriceMeanOfCheapestEx(listings, 25)).toBe(80);
+  });
+
+  it("mean-of-B averages cheapest B asks on deep books", () => {
+    const listings = Array.from({ length: 60 }, (_, i) => ({
+      priceEx: 100 + i,
+    }));
+    // cheapest 10: 100..109 → mean 104.5
+    expect(estimateBuyPriceMeanOfCheapestEx(listings, 10)).toBeCloseTo(104.5);
+    // cheapest 25: 100..124 → mean 112
+    expect(estimateBuyPriceMeanOfCheapestEx(listings, 25)).toBeCloseTo(112);
+  });
+
+  it("mean-of-B mid-book 6–49 uses mean of all when n < B (no 35%)", () => {
+    // 20 listings, B=25 → mean of all 20
+    const listings = Array.from({ length: 20 }, (_, i) => ({
+      priceEx: 10 + i,
+    }));
+    const mean = listings.reduce((s, l) => s + l.priceEx, 0) / 20;
+    expect(estimateBuyPriceMeanOfCheapestEx(listings, 25)).toBeCloseTo(mean);
+    // Must not match legacy 35% depth pick
+    const legacy = estimateBuyPriceEx(listings, 25);
+    expect(estimateBuyPriceMeanOfCheapestEx(listings, 25)).not.toBe(legacy);
+  });
+
+  it("mean-of-B covers 6–49 listing books without 35% heuristic", () => {
+    for (const n of [6, 10, 15, 29, 35, 49]) {
+      const listings = Array.from({ length: n }, (_, i) => ({
+        priceEx: 50 + i * 2,
+      }));
+      const B = 25;
+      const k = Math.min(B, n);
+      const expected =
+        listings.slice(0, k).reduce((s, l) => s + l.priceEx, 0) / k;
+      expect(estimateBuyPriceMeanOfCheapestEx(listings, B)).toBeCloseTo(
+        expected,
+      );
+      // note must not mention p~35%
+      expect(buyMeanEstimateNote(n, B, "cold")).not.toMatch(/35%/);
+    }
+  });
+
+  it("regime → effective B: hot min(B,10), cold B, warm/unknown min(B,25)", () => {
+    expect(effectiveBuyCountForRegime("hot", 40)).toBe(10);
+    expect(effectiveBuyCountForRegime("hot", 8)).toBe(8);
+    expect(effectiveBuyCountForRegime("cold", 40)).toBe(40);
+    expect(effectiveBuyCountForRegime("unknown", 40)).toBe(25);
+    expect(effectiveBuyCountForRegime("unknown", 20)).toBe(20);
+    expect(buyMeanEstimateNote(80, 40, "hot")).toMatch(/mean@hot10|mean@min\(B,10\)/);
+    expect(buyMeanEstimateNote(80, 40, "cold")).toBe("mean@B");
+    expect(buyMeanEstimateNote(80, 40, "unknown")).toMatch(
+      /mean@warm25|mean@min\(B,25\)/,
+    );
+    expect(buyMeanEstimateNote(80, 40, undefined)).toMatch(
+      /mean@warm25|mean@min\(B,25\)/,
+    );
   });
 
   it("sell undercuts pack below cheapest ≥24h stale anchor", () => {
     const now = Date.parse("2026-08-11T12:00:00.000Z");
     const dayMs = 24 * 60 * 60 * 1000;
-    // Fresh pack under stale ghost: undercut highest ask strictly below anchor
     const price = estimateSellPriceEx(
       [
         { priceEx: 100, indexedAt: new Date(now - hour(1)).toISOString() },
@@ -139,7 +188,6 @@ describe("trade-price-estimators", () => {
       ],
       { nowMs: now },
     );
-    // thin book (<6) → 10% under pack leader 100
     expect(price).toBe(90);
   });
 
@@ -184,7 +232,7 @@ describe("trade-price-estimators", () => {
       ],
       { nowMs: now },
     );
-    expect(price).toBe(108); // live floor × 0.9 (thin)
+    expect(price).toBe(108);
   });
 
   it("deep all-stale book undercuts cheapest recently-stale ask", () => {
@@ -194,7 +242,6 @@ describe("trade-price-estimators", () => {
       priceEx: 200 + i * 10,
       indexedAt: new Date(now - dayMs * 2 - hour(i)).toISOString(),
     }));
-    // nothing below anchor → shave anchor at 4%
     expect(estimateSellPriceEx(listings, { nowMs: now })).toBe(192);
   });
 
@@ -217,7 +264,12 @@ describe("trade-price-estimators", () => {
 
   it("returns null on empty books", () => {
     expect(estimateBuyPriceEx([])).toBeNull();
+    expect(estimateBuyPriceMeanOfCheapestEx([], 25)).toBeNull();
     expect(estimateSellPriceEx([])).toBeNull();
+  });
+
+  it("BUY_DEPTH_N remains 25", () => {
+    expect(BUY_DEPTH_N).toBe(25);
   });
 });
 

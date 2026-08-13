@@ -21,10 +21,12 @@ import {
   BUY_MAX_EX,
   FLOW_PROBE_MS,
   SELL_MAX_EX,
-  buyDepthForRegime,
   buyEstimateNote,
+  buyMeanEstimateNote,
   classifyMarketFlow,
+  effectiveBuyCountForRegime,
   estimateBuyPriceEx,
+  estimateBuyPriceMeanOfCheapestEx,
   estimateSellPriceEx,
   listingAmountToExalt,
   type ExaltFx,
@@ -937,20 +939,25 @@ export async function syncTabletMarketFromTrade(opts?: {
   seedMarket?: MarketPriceCache;
   onProgress?: (detail: string) => void;
   isCancelled?: () => boolean;
-  /** Cold-market buy depth (patience). Hot uses BUY_DEPTH_HOT after flow probe. */
+  /** Buy count B — mean of cheapest B for EV blank cost. */
+  buyCountB?: number;
+  /**
+   * @deprecated Use buyCountB. Read alias for one revision.
+   */
   coldBuyDepth?: number;
   /** Delay between buy snapshots for flow detection (ms). */
   flowProbeMs?: number;
-  /** Set false to skip re-query (single snapshot, unknown regime → cold depth). */
+  /** Set false to skip re-query (single snapshot, unknown regime → warm depth). */
   flowProbe?: boolean;
 }): Promise<MarketSyncResult> {
   const combosPerBase = opts?.combosPerBase ?? 8;
   const progress = opts?.onProgress ?? (() => undefined);
   const isCancelled = opts?.isCancelled ?? (() => false);
-  const coldBuyDepth = Math.max(
+  const buyCountB = Math.max(
     5,
-    opts?.coldBuyDepth ?? BUY_DEPTH_COLD_DEFAULT,
+    opts?.buyCountB ?? opts?.coldBuyDepth ?? BUY_DEPTH_COLD_DEFAULT,
   );
+  const coldBuyDepth = buyCountB;
   const flowProbeMs = opts?.flowProbeMs ?? FLOW_PROBE_MS;
   const flowProbeEnabled = opts?.flowProbe !== false;
   const filterIds = opts?.baseIds?.length
@@ -1224,17 +1231,17 @@ export async function syncTabletMarketFromTrade(opts?: {
         }
       }
 
-      const depth = buyDepthForRegime(regime, coldBuyDepth);
-      const price = estimateBuyPriceEx(priced, depth);
+      const kEff = effectiveBuyCountForRegime(regime, buyCountB);
+      const price = estimateBuyPriceMeanOfCheapestEx(priced, kEff);
       entry.searches.push(
         buildSearchTrace({
           kind: "buy-online",
-          label: `${ctx} flow=${regime} buy@${depth}`,
+          label: `${ctx} flow=${regime} mean@${kEff}`,
           typeName,
           rows: [],
           priced,
           estimate: price,
-          estimateNote: `flow=${regime} · ${buyEstimateNote(priced.length, depth)}`,
+          estimateNote: `flow=${regime} · ${buyMeanEstimateNote(priced.length, buyCountB, regime)}`,
           floorEx: buyFloor,
           ceilingEx: buyCeiling,
         }),
@@ -1247,7 +1254,7 @@ export async function syncTabletMarketFromTrade(opts?: {
         entry.finalStatus = status;
         console.info(
           `[tablet-market] ${base.name} buy=${price.toFixed(1)}ex ` +
-            `n=${sampleSize} mix=${mix} flow=${regime} @${depth}`,
+            `n=${sampleSize} mix=${mix} flow=${regime} mean@${kEff}`,
         );
       }
       baseDebug.push(entry);
@@ -1387,7 +1394,7 @@ export async function syncTabletMarketFromTrade(opts?: {
     scopeLabel ? `only:${scopeLabel}` : null,
     stats.currenciesPriced ? "ninja orbs" : null,
     stats.basesPriced
-      ? `${stats.basesPriced} bases(buy@hot${BUY_DEPTH_HOT}/cold${coldBuyDepth}${flowProbeEnabled ? "+flow" : ""},10u)`
+      ? `${stats.basesPriced} bases(mean@hot${BUY_DEPTH_HOT}/B${buyCountB}/warm${BUY_DEPTH_N}${flowProbeEnabled ? "+flow" : ""},10u)`
       : null,
     stats.combosPriced ? `${stats.combosPriced} combos(sell)` : null,
     `${exaltPerChaos.toFixed(0)}ex/c`,

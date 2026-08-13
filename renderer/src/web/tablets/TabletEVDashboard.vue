@@ -4,8 +4,8 @@
       class="widget-default-style p-2 flex flex-col gap-2 overflow-hidden"
       :style="
         showDebug
-          ? 'min-width: 30rem; max-width: 48rem; max-height: 90vh'
-          : 'min-width: 26rem; max-width: 42rem; max-height: 88vh'
+          ? 'min-width: 60rem; max-width: 110rem; max-height: 92vh'
+          : 'min-width: 56rem; max-width: 104rem; max-height: 90vh'
       "
     >
       <div class="flex items-center justify-between gap-2 text-gray-100">
@@ -41,18 +41,39 @@
         </button>
         <label
           class="flex items-center gap-1 text-xs text-gray-400 px-1"
-          title="Cold-market buy depth (patience). Hot books still use ~10 after the flow probe."
+          title="Buy count B: blank unit cost = mean of the cheapest B asks (hot→min(B,10), warm→min(B,25), cold→B). Intentional design change vs older Nth+35% mid-book — blank costs and EV shifted by design."
         >
-          Cold buy@
+          Buy B
           <input
             type="number"
             min="5"
             max="50"
             step="1"
             class="w-12 bg-gray-900 border border-gray-700 rounded px-1 py-0.5 text-gray-100"
-            :value="coldBuyDepth"
+            :value="buyCountB"
             :disabled="isRefreshing"
-            @change="onColdBuyDepthInput"
+            @change="onBuyCountBInput"
+          />
+        </label>
+        <span
+          class="text-[10px] text-gray-500 max-w-[14rem] leading-tight"
+          title="Ship note: blank unit cost is mean of cheapest B asks (regime-capped). Not the legacy mid-book / ~35% path."
+        >
+          Blank cost = mean@B (by design)
+        </span>
+        <label
+          class="flex items-center gap-1 text-xs text-gray-400 px-1"
+          title="Craft count C: batch size for risk UI only (does not change blank buy price)."
+        >
+          Craft C
+          <input
+            type="number"
+            min="1"
+            max="500"
+            step="1"
+            class="w-12 bg-gray-900 border border-gray-700 rounded px-1 py-0.5 text-gray-100"
+            :value="craftCountC"
+            @change="onCraftCountCInput"
           />
         </label>
         <button type="button" class="btn text-xs" @click="copySelectedRegex">
@@ -64,11 +85,20 @@
         <button
           type="button"
           class="btn text-xs"
-          :class="{ 'ring-1 ring-amber-400': showManualSurvey }"
-          :title="'In-game manual Temple survey: trade filters + your sell price'"
-          @click="showManualSurvey = !showManualSurvey"
+          :class="{ 'ring-1 ring-violet-400': showRollSeen }"
+          title="Log experiential affix hits for weight fitting"
+          @click="showRollSeen = !showRollSeen"
         >
-          {{ showManualSurvey ? "Hide Manual Survey" : "Manual Tier Survey" }}
+          {{ showRollSeen ? "Hide Roll Log" : "Roll Log" }}
+        </button>
+        <button
+          type="button"
+          class="btn text-xs"
+          :class="{ 'ring-1 ring-amber-400': showTierUncertainty }"
+          title="Which mods are we least sure how to tier (S/A/B/Junk)?"
+          @click="showTierUncertainty = !showTierUncertainty"
+        >
+          {{ showTierUncertainty ? "Hide Tier Uncertainty" : "Tier Uncertainty" }}
         </button>
         <button
           type="button"
@@ -80,9 +110,13 @@
         </button>
       </div>
 
-      <ManualTierSurveyPanel
-        v-if="showManualSurvey"
-        @close="showManualSurvey = false"
+      <TierUncertaintyPanel
+        v-if="showTierUncertainty && selectedId"
+        :base-id="selectedId"
+        :market="market"
+        @close="showTierUncertainty = false"
+        @refresh-selected="refreshSelected"
+        @tier-changed="recompute"
       />
 
       <div
@@ -101,212 +135,287 @@
         <span v-if="simResult.truncated" class="text-amber-300">
           · {{ simResult.truncated }} truncated
         </span>
+        <div class="text-gray-500 mt-0.5">
+          Simulate net profit includes sales; ≠ 1a spend (1a is liquid spend only, no sale offsets).
+        </div>
       </div>
 
-      <div class="overflow-auto min-h-0 border border-gray-700 rounded">
-        <table class="w-full text-xs text-left">
-          <thead class="bg-gray-900 text-gray-300 sticky top-0">
-            <tr>
-              <th class="px-2 py-1">Tablet</th>
-              <th class="px-2 py-1 text-right">Base</th>
-              <th class="px-2 py-1 text-right">Net EV</th>
-              <th class="px-2 py-1 text-right">ex/hr</th>
-              <th class="px-2 py-1">Blank→</th>
-              <th class="px-2 py-1">Rare→</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="row in rows"
-              :key="row.baseId"
-              class="border-t border-gray-800 cursor-pointer hover:bg-gray-800/80"
-              :class="{
-                'bg-gray-800': selectedId === row.baseId,
-                'text-green-300': Number.isFinite(row.netEV) && row.netEV > 0,
-                'text-red-300': Number.isFinite(row.netEV) && row.netEV <= 0,
-                'text-gray-500': !Number.isFinite(row.netEV),
-              }"
-              @click="selectedId = row.baseId"
-            >
-              <td class="px-2 py-1 text-gray-100">{{ row.baseName }}</td>
-              <td class="px-2 py-1 text-right">{{ fmtEx(row.baseCost) }}</td>
-              <td class="px-2 py-1 text-right">{{ fmtEx(row.netEV) }}</td>
-              <td class="px-2 py-1 text-right">{{ fmtEx(row.profitPerHour, 1) }}</td>
-              <td class="px-2 py-1 text-sky-300" :title="`EV ${fmtEx(row.blankNetEV)}ex`">
-                {{ blankLabel(row.blankStrategy) }}
-              </td>
-              <td class="px-2 py-1 text-amber-300" :title="`EV ${fmtEx(row.rareNetEV)}ex`">
-                {{ rareLabel(row.rareStrategy) }}
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+      <RollSeenPanel
+        v-if="showRollSeen && selectedId"
+        :base-id="selectedId"
+        @fit-applied="onFitApplied"
+      />
 
       <div
-        v-if="selectedRow"
-        class="text-xs text-gray-300 bg-gray-900/60 rounded px-2 py-1 leading-snug"
+        v-if="confidenceRows.length"
+        class="text-xs border border-gray-800 rounded bg-gray-950/60 px-2 py-1"
       >
-        <span class="text-sky-300">Blank:</span>
-        {{ blankLabel(selectedRow.blankStrategy) }}
-        ({{ fmtEx(selectedRow.blankNetEV) }}ex) ·
-        <span class="text-amber-300">Rare:</span>
-        {{ rareLabel(selectedRow.rareStrategy) }}
-        ({{ fmtEx(selectedRow.rareNetEV) }}ex)
-      </div>
-
-      <div
-        v-if="selectedExplain"
-        class="text-xs border border-sky-800/50 rounded bg-gray-950/70 overflow-hidden flex flex-col min-h-0"
-        style="max-height: 36vh"
-      >
-        <div
-          class="px-2 py-1 bg-sky-950/40 text-sky-100 border-b border-sky-900/50 flex flex-wrap gap-x-3 gap-y-1"
-        >
-          <span class="font-semibold">Strategy revenue</span>
-          <span>
-            roll E[rev]
-            <b class="text-white">{{ fmtEx(selectedExplain.expectedRollRevenueEx) }}</b>ex
-          </span>
-          <span>
-            dump {{ fmtEx(selectedExplain.dumpFloorEx, 0) }}ex · base
-            {{ fmtEx(selectedExplain.baseCost, 0) }}ex · measured
-            {{ ((selectedExplain.measuredFrac || 0) * 100).toFixed(0) }}%
-          </span>
-          <span class="text-sky-200/70">
-            measured % = sync coverage (diagnostic) · rates = P · value → revenue
+        <div class="flex flex-wrap gap-x-3 gap-y-1 text-gray-400 mb-1">
+          <span class="text-violet-200 font-semibold">Weight confidence</span>
+          <span>{{ confidenceBadge }}</span>
+          <span v-if="confidenceFitResidual" class="text-gray-500">
+            {{ confidenceFitResidual }}
           </span>
         </div>
-        <div class="overflow-auto p-2 space-y-3 text-gray-300">
-          <div>
-            <div class="text-sky-200 mb-1">Alch roll → S / A / B / Trash</div>
-            <table class="w-full text-left mb-2">
-              <thead class="text-gray-500">
+        <div class="overflow-auto max-h-28">
+          <table class="w-full text-left">
+            <thead class="text-gray-500">
+              <tr>
+                <th class="px-1">mod</th>
+                <th class="px-1 text-right">n</th>
+                <th class="px-1 text-right">hits</th>
+                <th class="px-1 text-right">MLE</th>
+                <th class="px-1 text-right">μ</th>
+                <th class="px-1 text-right">CI95</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="r in confidenceRows"
+                :key="r.modId"
+                class="border-t border-gray-900 text-gray-300"
+              >
+                <td class="px-1 truncate max-w-[8rem]" :title="r.modId">
+                  {{ r.modId }}
+                </td>
+                <td class="px-1 text-right">{{ r.trials }}</td>
+                <td class="px-1 text-right">{{ r.hits }}</td>
+                <td class="px-1 text-right">{{ pct(r.mleRate) }}</td>
+                <td class="px-1 text-right">{{ pct(r.mean) }}</td>
+                <td class="px-1 text-right">
+                  {{ pct(r.ci95[0]) }}–{{ pct(r.ci95[1]) }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div
+        class="flex gap-3 min-h-0 flex-1 overflow-hidden"
+        style="min-height: 14rem"
+      >
+        <div
+          v-if="selectedId && selectedRow"
+          class="flex flex-col min-h-0 min-w-0 flex-1 overflow-auto"
+        >
+          <BatchRiskPanel
+            :base-id="selectedId"
+            :market="market"
+            :craft-count-c="craftCountC"
+            :weight-opts="selectedWeightOpts"
+            :point-white-ev="selectedRow.netEV"
+          />
+        </div>
+
+        <div
+          class="flex flex-col gap-2 min-h-0 min-w-0 flex-1 overflow-auto"
+        >
+          <div class="overflow-auto min-h-0 border border-gray-700 rounded flex-1">
+            <table class="w-full text-xs text-left">
+              <thead class="bg-gray-900 text-gray-300 sticky top-0">
                 <tr>
-                  <th class="px-1">bucket</th>
-                  <th class="px-1 text-right">P</th>
-                  <th class="px-1 text-right">avg ex</th>
-                  <th class="px-1 text-right">rev</th>
+                  <th class="px-2 py-1">Tablet</th>
+                  <th class="px-2 py-1 text-right">Base</th>
+                  <th class="px-2 py-1 text-right">Net EV</th>
+                  <th class="px-2 py-1 text-right">ex/hr</th>
+                  <th class="px-2 py-1">Blank→</th>
+                  <th class="px-2 py-1">Rare→</th>
                 </tr>
               </thead>
               <tbody>
                 <tr
-                  v-for="o in selectedExplain.rollOutcomes"
-                  :key="o.kind + o.label"
-                  class="border-t border-gray-900"
-                  :class="outcomeClass(o.kind)"
+                  v-for="row in rows"
+                  :key="row.baseId"
+                  class="border-t border-gray-800 cursor-pointer hover:bg-gray-800/80"
+                  :class="{
+                    'bg-gray-800': selectedId === row.baseId,
+                    'text-green-300': Number.isFinite(row.netEV) && row.netEV > 0,
+                    'text-red-300': Number.isFinite(row.netEV) && row.netEV <= 0,
+                    'text-gray-500': !Number.isFinite(row.netEV),
+                  }"
+                  @click="selectedId = row.baseId"
                 >
-                  <td class="px-1">{{ o.label }}</td>
-                  <td class="px-1 text-right">{{ pct(o.prob) }}</td>
-                  <td class="px-1 text-right">{{ fmtEx(o.avgValueEx, 0) }}</td>
-                  <td class="px-1 text-right">{{ fmtEx(o.revenueEx, 1) }}</td>
+                  <td class="px-2 py-1 text-gray-100">{{ row.baseName }}</td>
+                  <td class="px-2 py-1 text-right">{{ fmtEx(row.baseCost) }}</td>
+                  <td class="px-2 py-1 text-right">{{ fmtEx(row.netEV) }}</td>
+                  <td class="px-2 py-1 text-right">{{ fmtEx(row.profitPerHour, 1) }}</td>
+                  <td class="px-2 py-1 text-sky-300" :title="`EV ${fmtEx(row.blankNetEV)}ex`">
+                    {{ blankLabel(row.blankStrategy) }}
+                  </td>
+                  <td class="px-2 py-1 text-amber-300" :title="`EV ${fmtEx(row.rareNetEV)}ex`">
+                    {{ rareLabel(row.rareStrategy) }}
+                  </td>
                 </tr>
               </tbody>
             </table>
-            <div class="text-sky-200/90 mb-1 mt-2">
-              Stash triage regex (S→A→B; no match → Trash)
-            </div>
-            <div
-              v-for="tr in selectedExplain.tierRegexes"
-              :key="'rx-' + tr.tier"
-              class="border border-gray-800 rounded mb-1 px-2 py-1 flex flex-wrap items-center gap-x-2 gap-y-1"
-            >
-              <span
-                class="font-semibold w-4"
-                :class="{
-                  'text-amber-200': tr.tier === 'S',
-                  'text-sky-200': tr.tier === 'A',
-                  'text-gray-200': tr.tier === 'B',
-                }"
-              >{{ tr.tier }}</span>
-              <code class="text-green-300/90 break-all flex-1 min-w-0">{{
-                stripRegexQuotes(tr.regex)
-              }}</code>
-              <button
-                type="button"
-                class="btn text-xs shrink-0"
-                :disabled="!tr.modIds.length"
-                :title="tr.note"
-                @click="copyTierRegex(tr.regex)"
+          </div>
+
+          <div
+            v-if="selectedRow"
+            class="text-xs text-gray-300 bg-gray-900/60 rounded px-2 py-1 leading-snug shrink-0"
+          >
+            <span class="text-sky-300">Blank:</span>
+            {{ blankLabel(selectedRow.blankStrategy) }}
+            ({{ fmtEx(selectedRow.blankNetEV) }}ex) ·
+            <span class="text-amber-300">Rare:</span>
+            {{ rareLabel(selectedRow.rareStrategy) }}
+            ({{ fmtEx(selectedRow.rareNetEV) }}ex)
+          </div>
+        </div>
+
+        <div
+          v-if="selectedExplain"
+          class="text-xs border border-sky-800/50 rounded bg-gray-950/70 overflow-hidden flex flex-col min-h-0 min-w-0 flex-1"
+        >
+          <div
+            class="px-2 py-1 bg-sky-950/40 text-sky-100 border-b border-sky-900/50 flex flex-wrap gap-x-3 gap-y-1 shrink-0"
+          >
+            <span class="font-semibold">Strategy revenue</span>
+            <span>
+              roll E[rev]
+              <b class="text-white">{{ fmtEx(selectedExplain.expectedRollRevenueEx) }}</b>ex
+            </span>
+            <span>
+              dump {{ fmtEx(selectedExplain.dumpFloorEx, 0) }}ex · base
+              {{ fmtEx(selectedExplain.baseCost, 0) }}ex · measured
+              {{ ((selectedExplain.measuredFrac || 0) * 100).toFixed(0) }}%
+            </span>
+            <span class="text-sky-200/70">
+              measured % = sync coverage (diagnostic) · rates = P · value → revenue
+            </span>
+          </div>
+          <div class="overflow-auto min-h-0 p-2 space-y-3 text-gray-300">
+            <div>
+              <div class="text-sky-200 mb-1">Alch roll → S / A / B / Trash</div>
+              <table class="w-full text-left mb-2">
+                <thead class="text-gray-500">
+                  <tr>
+                    <th class="px-1">bucket</th>
+                    <th class="px-1 text-right">P</th>
+                    <th class="px-1 text-right">avg ex</th>
+                    <th class="px-1 text-right">rev</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    v-for="o in selectedExplain.rollOutcomes"
+                    :key="o.kind + o.label"
+                    class="border-t border-gray-900"
+                    :class="outcomeClass(o.kind)"
+                  >
+                    <td class="px-1">{{ o.label }}</td>
+                    <td class="px-1 text-right">{{ pct(o.prob) }}</td>
+                    <td class="px-1 text-right">{{ fmtEx(o.avgValueEx, 0) }}</td>
+                    <td class="px-1 text-right">{{ fmtEx(o.revenueEx, 1) }}</td>
+                  </tr>
+                </tbody>
+              </table>
+              <div class="text-sky-200/90 mb-1 mt-2">
+                Stash triage regex (S→A→B; no match → Trash)
+              </div>
+              <div
+                v-for="tr in selectedExplain.tierRegexes"
+                :key="'rx-' + tr.tier"
+                class="border border-gray-800 rounded mb-1 px-2 py-1 flex flex-wrap items-center gap-x-2 gap-y-1"
               >
-                Copy
-              </button>
-              <span class="text-gray-500 w-full text-[10px] leading-tight">{{
-                tr.note
-              }}</span>
-            </div>
-          </div>
-
-          <div>
-            <div class="text-sky-200 mb-1">From blank</div>
-            <div
-              v-for="s in selectedExplain.blank"
-              :key="'b-' + s.strategy"
-              class="border border-gray-800 rounded mb-1"
-            >
-              <div class="px-2 py-1 bg-gray-900 flex flex-wrap gap-x-2">
-                <span class="text-sky-300">{{ blankLabel(s.strategy as any) }}</span>
-                <span>
-                  rev <b class="text-white">{{ fmtEx(s.expectedRevenueEx) }}</b>
-                  · cost {{ fmtEx(s.costEx) }} · EV
-                  <span :class="s.netEV > 0 ? 'text-green-300' : 'text-red-300'">
-                    {{ fmtEx(s.netEV) }}
-                  </span>
-                </span>
-                <span v-if="s.note" class="text-gray-500 w-full">{{ s.note }}</span>
+                <span
+                  class="font-semibold w-4"
+                  :class="{
+                    'text-amber-200': tr.tier === 'S',
+                    'text-sky-200': tr.tier === 'A',
+                    'text-gray-200': tr.tier === 'B',
+                  }"
+                >{{ tr.tier }}</span>
+                <code class="text-green-300/90 break-all flex-1 min-w-0">{{
+                  stripRegexQuotes(tr.regex)
+                }}</code>
+                <button
+                  type="button"
+                  class="btn text-xs shrink-0"
+                  :disabled="!tr.modIds.length"
+                  :title="tr.note"
+                  @click="copyTierRegex(tr.regex)"
+                >
+                  Copy
+                </button>
+                <span class="text-gray-500 w-full text-[10px] leading-tight">{{
+                  tr.note
+                }}</span>
               </div>
-              <table class="w-full text-left">
-                <tbody>
-                  <tr
-                    v-for="o in s.outcomes"
-                    :key="o.label"
-                    class="border-t border-gray-900"
-                    :class="outcomeClass(o.kind)"
-                  >
-                    <td class="px-2 py-0.5">{{ o.label }}</td>
-                    <td class="px-1 text-right w-14">{{ pct(o.prob) }}</td>
-                    <td class="px-1 text-right w-16">{{ fmtEx(o.avgValueEx, 0) }}</td>
-                    <td class="px-1 text-right w-16">{{ fmtEx(o.revenueEx, 1) }}</td>
-                  </tr>
-                </tbody>
-              </table>
             </div>
-          </div>
 
-          <div>
-            <div class="text-amber-200 mb-1">
-              Per rare tier (EV = marginal vs sell-as-is at that tier = 0)
-            </div>
-            <div
-              v-for="s in selectedExplain.rare"
-              :key="'r-' + s.strategy"
-              class="border border-gray-800 rounded mb-1"
-            >
-              <div class="px-2 py-1 bg-gray-900 flex flex-wrap gap-x-2">
-                <span class="text-amber-300">{{ s.strategy }}</span>
-                <span>
-                  list
-                  <b class="text-white">{{ fmtEx(s.expectedRevenueEx) }}</b>
-                  · ΔEV
-                  <span :class="s.netEV > 0 ? 'text-green-300' : 'text-red-300'">
-                    {{ s.netEV > 0 ? "+" : "" }}{{ fmtEx(s.netEV) }}
+            <div>
+              <div class="text-sky-200 mb-1">From blank</div>
+              <div
+                v-for="s in selectedExplain.blank"
+                :key="'b-' + s.strategy"
+                class="border border-gray-800 rounded mb-1"
+              >
+                <div class="px-2 py-1 bg-gray-900 flex flex-wrap gap-x-2">
+                  <span class="text-sky-300">{{ blankLabel(s.strategy as any) }}</span>
+                  <span>
+                    rev <b class="text-white">{{ fmtEx(s.expectedRevenueEx) }}</b>
+                    · cost {{ fmtEx(s.costEx) }} · EV
+                    <span :class="s.netEV > 0 ? 'text-green-300' : 'text-red-300'">
+                      {{ fmtEx(s.netEV) }}
+                    </span>
                   </span>
-                </span>
-                <span v-if="s.note" class="text-gray-500 w-full">{{ s.note }}</span>
+                  <span v-if="s.note" class="text-gray-500 w-full">{{ s.note }}</span>
+                </div>
+                <table class="w-full text-left">
+                  <tbody>
+                    <tr
+                      v-for="o in s.outcomes"
+                      :key="o.label"
+                      class="border-t border-gray-900"
+                      :class="outcomeClass(o.kind)"
+                    >
+                      <td class="px-2 py-0.5">{{ o.label }}</td>
+                      <td class="px-1 text-right w-14">{{ pct(o.prob) }}</td>
+                      <td class="px-1 text-right w-16">{{ fmtEx(o.avgValueEx, 0) }}</td>
+                      <td class="px-1 text-right w-16">{{ fmtEx(o.revenueEx, 1) }}</td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
-              <table class="w-full text-left">
-                <tbody>
-                  <tr
-                    v-for="o in s.outcomes"
-                    :key="o.label"
-                    class="border-t border-gray-900"
-                    :class="outcomeClass(o.kind)"
-                  >
-                    <td class="px-2 py-0.5">{{ o.label }}</td>
-                    <td class="px-1 text-right w-16">{{ fmtEx(o.avgValueEx, 0) }}</td>
-                  </tr>
-                </tbody>
-              </table>
+            </div>
+
+            <div>
+              <div class="text-amber-200 mb-1">
+                Per rare tier (EV = marginal vs sell-as-is at that tier = 0)
+              </div>
+              <div
+                v-for="s in selectedExplain.rare"
+                :key="'r-' + s.strategy"
+                class="border border-gray-800 rounded mb-1"
+              >
+                <div class="px-2 py-1 bg-gray-900 flex flex-wrap gap-x-2">
+                  <span class="text-amber-300">{{ s.strategy }}</span>
+                  <span>
+                    list
+                    <b class="text-white">{{ fmtEx(s.expectedRevenueEx) }}</b>
+                    · ΔEV
+                    <span :class="s.netEV > 0 ? 'text-green-300' : 'text-red-300'">
+                      {{ s.netEV > 0 ? "+" : "" }}{{ fmtEx(s.netEV) }}
+                    </span>
+                  </span>
+                  <span v-if="s.note" class="text-gray-500 w-full">{{ s.note }}</span>
+                </div>
+                <table class="w-full text-left">
+                  <tbody>
+                    <tr
+                      v-for="o in s.outcomes"
+                      :key="o.label"
+                      class="border-t border-gray-900"
+                      :class="outcomeClass(o.kind)"
+                    >
+                      <td class="px-2 py-0.5">{{ o.label }}</td>
+                      <td class="px-1 text-right w-16">{{ fmtEx(o.avgValueEx, 0) }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         </div>
@@ -506,20 +615,27 @@ export default {
 <script setup lang="ts">
 import { computed, inject, onMounted, onUnmounted, ref } from "vue";
 import Widget from "../overlay/Widget.vue";
-import ManualTierSurveyPanel from "./ManualTierSurveyPanel.vue";
+import BatchRiskPanel from "./BatchRiskPanel.vue";
+import RollSeenPanel from "./RollSeenPanel.vue";
+import TierUncertaintyPanel from "./TierUncertaintyPanel.vue";
 import { Host, MainProcess } from "@/web/background/IPC";
 import type { WidgetManager } from "../overlay/interfaces";
 import {
   BLANK_STRATEGY_LABELS,
   ensureTabletMarketSynced,
   getHighValueModsForBase,
+  getWeightFitForBase,
   RARE_STRATEGY_LABELS,
-  setTabletColdBuyDepth,
+  runtimeOverridesForBase,
+  setTabletBuyCountB,
+  setTabletCraftCountC,
   summarizeMarketForUi,
-  tabletColdBuyDepth,
+  tabletBuyCountB,
+  tabletCraftCountC,
   tabletMarketCache,
   tabletMarketDebug,
   tabletMarketStatus,
+  tabletRuntimeWeightOverrides,
   TabletEVEngine,
   TabletRegexBuilder,
   type BlankCraftStrategy,
@@ -527,6 +643,8 @@ import {
   type RareDispositionStrategy,
   type TabletEVResult,
 } from "@/web/price-check/tablets";
+import { hydrateRollSeenFromRepo } from "@/web/price-check/tablets/tablet-roll-seen-host-bridge";
+import { TABLET_BASES } from "@/web/price-check/tablets/mod-weights";
 
 const props = defineProps<{
   config: TabletEVWidget;
@@ -548,16 +666,16 @@ if (props.config.wmFlags[0] === "uninitialized") {
 const isRefreshing = ref(false);
 /** Short name shown while a single-base refresh is in flight */
 const refreshScope = ref<string | null>(null);
-const coldBuyDepth = tabletColdBuyDepth;
+const buyCountB = tabletBuyCountB;
+const craftCountC = tabletCraftCountC;
 const showDebug = ref(false);
-const showManualSurvey = ref(false);
+const showTierUncertainty = ref(false);
+const showRollSeen = ref(false);
 const expandedSearch = ref<number | null>(0);
 const expandedCombo = ref<number | null>(null);
 const market = tabletMarketCache;
 const debug = tabletMarketDebug;
-const engine = computed(() => new TabletEVEngine(market.value));
-const rows = ref<TabletEVResult[]>(engine.value.calculateAllBaseEVs());
-const selectedId = ref(rows.value[0]?.baseId ?? "breach_tablet");
+const selectedId = ref("breach_tablet");
 const simResult = ref<{
   hits: number;
   hitRate: number;
@@ -568,13 +686,70 @@ const simResult = ref<{
   policyLabel: string;
 } | null>(null);
 
+/** Per-base maps only — never flatten/merge (shared mod ids must not stomp). */
+function engineWeightOpts() {
+  const all = tabletRuntimeWeightOverrides.value;
+  if (!all || !Object.keys(all).length) return undefined;
+  return { runtimeOverridesByBase: all };
+}
+
+const weightOpts = computed(() => engineWeightOpts());
+
+/** Selected base only — Simulate / BatchRisk / explain. */
+const selectedWeightOpts = computed(() => {
+  const o = runtimeOverridesForBase(selectedId.value);
+  return o && Object.keys(o).length
+    ? { runtimeOverrides: o }
+    : undefined;
+});
+
+const engine = computed(
+  () => new TabletEVEngine(market.value, weightOpts.value),
+);
+const rows = ref<TabletEVResult[]>(engine.value.calculateAllBaseEVs());
+if (!rows.value.some((r) => r.baseId === selectedId.value) && rows.value[0]) {
+  selectedId.value = rows.value[0].baseId;
+}
+
 const selectedRow = computed(() =>
   rows.value.find((r) => r.baseId === selectedId.value),
 );
 
+const confidenceRows = computed(() => {
+  const fit = getWeightFitForBase(selectedId.value);
+  return fit?.posteriors ?? [];
+});
+
+const confidenceBadge = computed(() => {
+  if (runtimeOverridesForBase(selectedId.value)) return "runtime fit";
+  const fit = getWeightFitForBase(selectedId.value);
+  if (fit && !fit.converged) return "fit failed";
+  const committed = TABLET_BASES[selectedId.value]?.weightOverrides;
+  if (committed && Object.keys(committed).length) return "committed overrides";
+  return "seed weights";
+});
+
+const confidenceFitResidual = computed(() => {
+  const fit = getWeightFitForBase(selectedId.value);
+  if (!fit) return null;
+  const abs = Number.isFinite(fit.maxAbsErr)
+    ? fit.maxAbsErr.toExponential(2)
+    : "—";
+  const rel = Number.isFinite(fit.maxRelErr)
+    ? (fit.maxRelErr * 100).toFixed(2)
+    : "—";
+  return `fit residual max|Δp|=${abs} · max rel=${rel}%${
+    fit.converged ? "" : " (!converged)"
+  }`;
+});
+
 const selectedExplain = computed(() => {
   if (!selectedId.value) return null;
-  return engine.value.explainStrategies(selectedId.value);
+  // Per-base opts so shared mods from other applied fits never leak in.
+  return new TabletEVEngine(
+    market.value,
+    selectedWeightOpts.value,
+  ).explainStrategies(selectedId.value);
 });
 
 const selectedBaseDebug = computed(() =>
@@ -643,7 +818,10 @@ function copyDebugJson() {
 }
 
 function recompute() {
-  rows.value = new TabletEVEngine(market.value).calculateAllBaseEVs();
+  rows.value = new TabletEVEngine(
+    market.value,
+    weightOpts.value,
+  ).calculateAllBaseEVs();
   simResult.value = null;
   expandedSearch.value = 0;
   expandedCombo.value = null;
@@ -653,9 +831,18 @@ function shortBaseName(name: string) {
   return name.replace(/\s*Tablet\s*$/i, "") || name;
 }
 
-function onColdBuyDepthInput(ev: Event) {
+function onBuyCountBInput(ev: Event) {
   const el = ev.target as HTMLInputElement;
-  setTabletColdBuyDepth(Number(el.value));
+  setTabletBuyCountB(Number(el.value));
+}
+
+function onCraftCountCInput(ev: Event) {
+  const el = ev.target as HTMLInputElement;
+  setTabletCraftCountC(Number(el.value));
+}
+
+function onFitApplied() {
+  recompute();
 }
 
 async function refresh() {
@@ -733,6 +920,7 @@ const hotkeyController = Host.onEvent("MAIN->CLIENT::widget-action", (e) => {
 });
 
 onMounted(() => {
+  void hydrateRollSeenFromRepo();
   void refresh();
 });
 

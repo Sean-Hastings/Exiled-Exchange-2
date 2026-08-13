@@ -98,8 +98,40 @@ const EXPLICIT_TIER_BY_MOD_ID: Record<string, ModQualityTier> = {
   temple_summon_mons_t1: "Junk",
 };
 
+/** Session overlay from TierUncertaintyPanel (not yet committed to mod-tiers). */
+const SESSION_TIER_BY_MOD_ID: Record<string, ModQualityTier> = {};
+
+/** True iff modId has an entry in EXPLICIT_TIER_BY_MOD_ID (§3.8). */
+export function hasExplicitTier(modId: string): boolean {
+  return Object.prototype.hasOwnProperty.call(EXPLICIT_TIER_BY_MOD_ID, modId);
+}
+
+export function hasSessionModTier(modId: string): boolean {
+  return Object.prototype.hasOwnProperty.call(SESSION_TIER_BY_MOD_ID, modId);
+}
+
+export function getSessionModTier(modId: string): ModQualityTier | undefined {
+  return SESSION_TIER_BY_MOD_ID[modId];
+}
+
+/** Runtime tier overlay for uncertainty panel; does not mutate EXPLICIT map. */
+export function setSessionModTier(
+  modId: string,
+  tier: ModQualityTier | null,
+): void {
+  if (tier == null) delete SESSION_TIER_BY_MOD_ID[modId];
+  else SESSION_TIER_BY_MOD_ID[modId] = tier;
+}
+
+export function clearSessionModTiers(): void {
+  for (const k of Object.keys(SESSION_TIER_BY_MOD_ID)) {
+    delete SESSION_TIER_BY_MOD_ID[k];
+  }
+}
+
 export function modQualityTier(modId: string): ModQualityTier {
-  if (EXPLICIT_TIER_BY_MOD_ID[modId]) return EXPLICIT_TIER_BY_MOD_ID[modId];
+  if (SESSION_TIER_BY_MOD_ID[modId]) return SESSION_TIER_BY_MOD_ID[modId]!;
+  if (EXPLICIT_TIER_BY_MOD_ID[modId]) return EXPLICIT_TIER_BY_MOD_ID[modId]!;
   const score = TABLET_MOD_WEIGHTS[modId]?.valueScore ?? 0;
   if (score >= 90) return "S";
   if (score >= 70) return "A";

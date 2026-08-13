@@ -484,6 +484,61 @@ export function clearChaosTransitionCache() {
 }
 
 /**
+ * Magic T+A = one prefix + one suffix from separate pools (independent rolls).
+ * Returns branch probs for strat_reco regal/alch routing.
+ */
+export function magicOnePOneSBranchProbs(baseId: string): {
+  pHasS: number;
+  pHasAOnly: number;
+  pJunk: number;
+  /** Mean single-side S share (prefix+suffix)/2 — for exalt caps etc. */
+  pSMean: number;
+  pAMean: number;
+} | null {
+  const base = TABLET_BASES[baseId];
+  if (!base) return null;
+
+  const sideShares = (pool: string[]) => {
+    const shares: Record<ModQualityTier, number> = {
+      S: 0,
+      A: 0,
+      B: 0,
+      Junk: 0,
+    };
+    let W = 0;
+    for (const id of pool) {
+      const w = modWeightForBase(baseId, id);
+      if (w <= 0) continue;
+      W += w;
+      shares[modQualityTier(id)] += w;
+    }
+    if (!(W > 0)) return null;
+    for (const q of QUALITY_TIERS) shares[q] /= W;
+    return shares;
+  };
+
+  const p = sideShares(base.allowedPrefixPool);
+  const s = sideShares(base.allowedSuffixPool);
+  if (!p || !s) return null;
+
+  const pNoS_p = 1 - p.S;
+  const pNoS_s = 1 - s.S;
+  const pHasS = 1 - pNoS_p * pNoS_s;
+  const pBJunk_p = p.B + p.Junk;
+  const pBJunk_s = s.B + s.Junk;
+  // P(no S on either side ∧ at least one A)
+  const pHasAOnly = Math.max(0, pNoS_p * pNoS_s - pBJunk_p * pBJunk_s);
+  const pJunk = Math.max(0, 1 - pHasS - pHasAOnly);
+  return {
+    pHasS,
+    pHasAOnly,
+    pJunk,
+    pSMean: (p.S + s.S) / 2,
+    pAMean: (p.A + s.A) / 2,
+  };
+}
+
+/**
  * PoE2 Chaos Orb: pick one of 4 affixes uniformly, replace from that side's
  * pool. Tier transitions are averaged over the weighted 2p+2s mass in each
  * from-tier (MDP state is tier-only).
@@ -757,25 +812,12 @@ export function buildTierSaleTable(
       : Number.NaN;
   }
 
-  // Magic-pipeline → rare tier dist (same labels as alch)
-  const pool = [...base.allowedPrefixPool, ...base.allowedSuffixPool];
-  const totalW = pool.reduce(
-    (s, id) => s + modWeightForBase(baseId, id),
-    0,
-  );
+  // Magic-pipeline → rare tier dist (T+A = 1 prefix + 1 suffix, separate pools)
   let magicDist = emptyDist();
   let magicOrbCost = Number.NaN;
-  if (totalW > 0) {
-    const wTier = (q: ModQualityTier) =>
-      pool.reduce((s, id) => {
-        if (modQualityTier(id) !== q) return s;
-        return s + modWeightForBase(baseId, id);
-      }, 0);
-    const pS = wTier("S") / totalW;
-    const pA = wTier("A") / totalW;
-    const pMagicHasS = 1 - (1 - pS) ** 2;
-    const pMagicHasAOnly = (1 - pMagicHasS) * (1 - (1 - pA) ** 2);
-    const pMagicJunk = Math.max(0, 1 - pMagicHasS - pMagicHasAOnly);
+  const magicBranch = magicOnePOneSBranchProbs(baseId);
+  if (magicBranch) {
+    const { pHasS, pHasAOnly, pJunk } = magicBranch;
 
     const regalS: Record<RareTier, number> = {
       S: 0.55,
@@ -791,15 +833,13 @@ export function buildTierSaleTable(
     };
     for (const t of RARE_TIERS) {
       magicDist[t] =
-        pMagicHasS * regalS[t] +
-        pMagicHasAOnly * regalA[t] +
-        pMagicJunk * alchDist[t];
+        pHasS * regalS[t] + pHasAOnly * regalA[t] + pJunk * alchDist[t];
     }
     const sum = RARE_TIERS.reduce((s, t) => s + magicDist[t], 0) || 1;
     for (const t of RARE_TIERS) magicDist[t] /= sum;
 
     const regalSpend =
-      (pMagicHasS + pMagicHasAOnly) * regal + pMagicJunk * alchOrbCost;
+      (pHasS + pHasAOnly) * regal + pJunk * alchOrbCost;
     magicOrbCost =
       Number.isFinite(transmute) &&
       Number.isFinite(aug) &&

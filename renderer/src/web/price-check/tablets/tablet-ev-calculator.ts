@@ -16,6 +16,7 @@ import type { TabletSellBasis } from "./tablet-sell-estimate";
 import {
   defaultPolicy,
   expectedUnderDist,
+  magicOnePOneSBranchProbs,
   policyToLegacyRare,
   recommendPolicy,
   simulatePolicy,
@@ -736,19 +737,16 @@ export class TabletEVEngine {
   }
 
   private magicPipelineOutcomes(
-    pool: string[],
+    baseId: string,
     baseCost: number,
     empiricalComboEV: number,
   ): { outcomes: OutcomeSlice[]; note: string } {
     const c = this.marketCache.currencyCosts;
     const alch = measured(c.alchemy);
     const a = anchors(this.marketCache);
-    const totalW = pool.reduce(
-      (s, id) => s + (modWeightForBase(baseId, id)),
-      0,
-    );
+    const branch = magicOnePOneSBranchProbs(baseId);
     if (
-      totalW <= 0 ||
+      !branch ||
       !Number.isFinite(a.tradeDivine) ||
       !Number.isFinite(a.merchantHigh) ||
       !Number.isFinite(a.merchantMid) ||
@@ -761,17 +759,8 @@ export class TabletEVEngine {
       };
     }
 
-    const weightOf = (tier: ReturnType<typeof modQualityTier>) =>
-      pool.reduce((s, id) => {
-        if (modQualityTier(id) !== tier) return s;
-        return s + (modWeightForBase(baseId, id));
-      }, 0);
-
-    const pS = weightOf("S") / totalW;
-    const pA = weightOf("A") / totalW;
-    const pMagicHasS = 1 - (1 - pS) ** 2;
-    const pMagicHasAOnly = (1 - pMagicHasS) * (1 - (1 - pA) ** 2);
-    const pMagicJunk = Math.max(0, 1 - pMagicHasS - pMagicHasAOnly);
+    const { pHasS: pMagicHasS, pHasAOnly: pMagicHasAOnly, pJunk: pMagicJunk } =
+      branch;
 
     const divineList = Math.min(
       a.tradeDivine,
@@ -1034,9 +1023,9 @@ export class TabletEVEngine {
    * Never mixes "until first hit" costs with single-roll revenue.
    */
   private evaluateBlankPaths(
+    baseId: string,
     baseCost: number,
     expectedGross: number,
-    pool: string[],
   ): Array<PathEV & { strategy: BlankCraftStrategy }> {
     const c = this.marketCache.currencyCosts;
     const alch = measured(c.alchemy);
@@ -1052,7 +1041,7 @@ export class TabletEVEngine {
     const scourAlchNet = expectedGross - alchCost;
 
     const magic = this.estimateMagicPipeline(
-      pool,
+      baseId,
       transmute,
       aug,
       regal,
@@ -1087,7 +1076,7 @@ export class TabletEVEngine {
    * otherwise netEV stays NaN (visible gap, not invented divines).
    */
   private estimateMagicPipeline(
-    pool: string[],
+    baseId: string,
     transmute: number,
     aug: number,
     regal: number,
@@ -1097,12 +1086,9 @@ export class TabletEVEngine {
     baseCost: number,
     empiricalComboEV: number,
   ): PathEV & { strategy: BlankCraftStrategy } {
-    const totalW = pool.reduce(
-      (s, id) => s + (modWeightForBase(baseId, id)),
-      0,
-    );
     const setup = transmute + aug;
-    if (totalW <= 0) {
+    const branch = magicOnePOneSBranchProbs(baseId);
+    if (!branch) {
       return {
         strategy: "Magic-Pipeline",
         netEV: -(baseCost + setup),
@@ -1112,20 +1098,16 @@ export class TabletEVEngine {
       };
     }
 
-    const weightOf = (tier: ReturnType<typeof modQualityTier>) =>
-      pool.reduce((s, id) => {
-        if (modQualityTier(id) !== tier) return s;
-        return s + (modWeightForBase(baseId, id));
-      }, 0);
-
-    const pS = weightOf("S") / totalW;
-    const pA = weightOf("A") / totalW;
-    const pMagicHasS = 1 - (1 - pS) ** 2;
-    const pMagicHasAOnly = (1 - pMagicHasS) * (1 - (1 - pA) ** 2);
-    const pMagicJunk = Math.max(0, 1 - pMagicHasS - pMagicHasAOnly);
+    const {
+      pHasS: pMagicHasS,
+      pHasAOnly: pMagicHasAOnly,
+      pJunk: pMagicJunk,
+      pSMean,
+      pAMean,
+    } = branch;
 
     // Cap exalt spend probability — only slam when magic already showed S
-    const pExalt = pMagicHasS * Math.min(0.35, pS + pA);
+    const pExalt = pMagicHasS * Math.min(0.35, pSMean + pAMean);
 
     const expectedCost =
       baseCost +

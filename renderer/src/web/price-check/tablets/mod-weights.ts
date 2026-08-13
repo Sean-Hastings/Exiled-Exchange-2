@@ -297,11 +297,10 @@ export const TABLET_BASES: Record<string, TabletBaseDefinition> = {
     ),
     maxAffixes: 4,
     /**
-     * Fitted 2026-08-12 from three crystal observations (suffix share):
-     *   alch n=27 presence 4/27 → x=1−√(1−P) ≈ 0.077 → wc≈2740
-     *   magic/T+A n=28 presence 1/28 → x≈0.036 → wc≈1220
-     *   chaos one-affix ~1/32.5 → wc≈1770 (inverts P≈½·wc/(W−w_keep))
-     * Precision-weighted blend → wc≈2210 (was 2575 alch-only).
+     * Fitted 2026-08-12; after full filler pools still ≈ sample:
+     *   5 crystal hits / 164 affix rolls ≈ 3.05% → ~33 chaos/hit (one-affix).
+     *   Model with wc=2210: P(crystal|chaos)≈3.2% → ~31 chaos/hit.
+     *   Earlier blend (alch presence / magic / chaos) → wc≈2210.
      */
     weightOverrides: {
       temple_crystal_t1: 2210,

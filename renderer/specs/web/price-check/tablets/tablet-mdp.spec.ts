@@ -5,6 +5,7 @@ import type { MarketPriceCache } from "@/web/price-check/tablets/tablet-ev-calcu
 import {
   buildTierSaleTable,
   defaultPolicy,
+  magicOnePOneSBranchProbs,
   recommendPolicy,
   solveOptimalRarePolicy,
   solvePolicy,
@@ -196,5 +197,17 @@ describe("tablet-mdp", () => {
     expect(sales.uncorrupted.S).toBe(33);
     expect(sales.uncorrupted.A).toBe(33);
     expect(sales.uncorrupted.B).toBe(33);
+  });
+
+  it("magic T+A uses separate prefix/suffix pools (not a combined draw)", () => {
+    const branch = magicOnePOneSBranchProbs("temple_tablet");
+    expect(branch).not.toBeNull();
+    // Temple S-mods are suffix-only (crystal, waystones) — combined-pool
+    // (1-pS)^2 understates P(has S) vs true 1p+1s.
+    expect(branch!.pHasS).toBeGreaterThan(0.05);
+    expect(branch!.pHasS + branch!.pHasAOnly + branch!.pJunk).toBeCloseTo(
+      1,
+      9,
+    );
   });
 });

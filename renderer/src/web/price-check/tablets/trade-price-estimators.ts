@@ -1,19 +1,37 @@
-/** Defaults for tablet buy/sell trade estimators (exalt-native prices). */
-export const BUY_DEPTH_N = 25;
-export const SELL_STALE_MS = 24 * 60 * 60 * 1000;
-/** Ignore listings older than this for the "stale clearing price" preference. */
-export const SELL_MAX_STALE_AGE_MS = 14 * 24 * 60 * 60 * 1000;
-export const HOT_MARKET_UNDERCUT = 0.95;
 /**
- * Trade sorts by raw amount across mixed currencies, so the cheapest page is
- * flooded with 1-alch / 1-transmute noise. Drop sub-floor asks before buy@N.
- * Blanks are typically 50–200ex; <5ex after conversion is dust.
+ * Buy/sell trade estimators + market flow classification (exalt-native).
  */
+
+export const BUY_DEPTH_N = 25;
+/** Hot / refilling book — ~10th cheapest as working ceiling. */
+export const BUY_DEPTH_HOT = 10;
+/** Default cold-market patience depth (overridable from UI). */
+export const BUY_DEPTH_COLD_DEFAULT = 25;
+
+export const SELL_STALE_MS = 24 * 60 * 60 * 1000;
+/** Ignore listings older than this for the stale clearing anchor. */
+export const SELL_MAX_STALE_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+/** Default undercut below the pack leader under the stale anchor. */
+export const SELL_UNDERCUT_PCT = 0.04;
+/** Thin-book undercut (clear faster). */
+export const SELL_UNDERCUT_THIN_PCT = 0.1;
+export const SELL_THIN_BOOK = 6;
+/** @deprecated prefer SELL_UNDERCUT_PCT — kept for older call sites */
+export const HOT_MARKET_UNDERCUT = 1 - SELL_UNDERCUT_PCT;
+
+/**
+ * Re-query delay for hot vs cold flow detection. Multi-base sync weaves other
+ * bases' first snapshots into this wait so it is not pure idle time.
+ */
+export const FLOW_PROBE_MS = 45_000;
+/** New listings below ceiling on re-query → treat as hot. */
+export const FLOW_PROBE_MIN_NEW = 2;
+
 export const BUY_DUST_FLOOR_EX = 5;
-/** Absolute blank-buy ceiling (~70div @350ex) — rejects mirror/meme asks. */
 export const BUY_MAX_EX = 25_000;
-/** Crafted combo sell ceiling — still rejects mirrors / fat-finger divines. */
 export const SELL_MAX_EX = 100_000;
+
+export type MarketFlowRegime = "hot" | "cold" | "unknown";
 
 export interface PricedListing {
   /** Listing price converted to exalted orbs. */
@@ -34,12 +52,10 @@ export interface ExaltFx {
   transmute?: number;
   augmentation?: number;
   scouring?: number;
-  /** Optional: exalt value of one greater/perfect exalted orb */
   greaterExalted?: number;
   perfectExalted?: number;
 }
 
-/** EE2 remaps greater/perfect trade tags to display labels before we see them. */
 const DISPLAY_CURRENCY_TO_TRADE_TAG: Record<string, string> = {
   "G. transmute": "greater-orb-of-transmutation",
   "P. transmute": "perfect-orb-of-transmutation",
@@ -53,7 +69,6 @@ const DISPLAY_CURRENCY_TO_TRADE_TAG: Record<string, string> = {
   "P. exalted": "perfect-exalted-orb",
 };
 
-/** Map priceCurrency (trade tag or EE2 display label) → trade tag. */
 export function resolveTradeCurrencyTag(priceCurrency: string): string {
   const trimmed = priceCurrency.trim();
   if (DISPLAY_CURRENCY_TO_TRADE_TAG[trimmed]) {
@@ -73,11 +88,6 @@ function normCurrency(currency: string): string {
     .replace(/^p-/, "perfect-");
 }
 
-/**
- * Convert a trade listing amount+currency into exalted orbs.
- * Only whitelist currencies — mirrors / unknown orbs return null (never invent).
- * Uses explicit FX only (no ninja primaryValue multiply — that double-counted).
- */
 export function listingAmountToExalt(
   amount: number,
   currency: string,
@@ -118,22 +128,14 @@ export function listingAmountToExalt(
     return orbCost(fx.transmute);
   }
   if (
-    c === "aug" ||
     c === "augmentation" ||
-    c === "orb-of-augmentation"
+    c === "orb-of-augmentation" ||
+    c === "aug"
   ) {
     return orbCost(fx.augmentation);
   }
   if (c === "scour" || c === "scouring" || c === "orb-of-scouring") {
     return orbCost(fx.scouring ?? 0) ?? 0;
-  }
-
-  if (c === "greater-chaos-orb" || c === "greater-chaos") {
-    // Approx: treat as chaos (better than dropping); G-chaos ≥ chaos
-    return amount * fx.exaltPerChaos;
-  }
-  if (c === "perfect-chaos-orb" || c === "perfect-chaos") {
-    return amount * fx.exaltPerChaos;
   }
   if (c === "greater-exalted-orb" || c === "greater-exalted") {
     return orbCost(fx.greaterExalted);
@@ -141,15 +143,15 @@ export function listingAmountToExalt(
   if (c === "perfect-exalted-orb" || c === "perfect-exalted") {
     return orbCost(fx.perfectExalted);
   }
-
-  // Explicit reject: mirrors and anything else (never ninja-multiply into millions)
+  if (c === "greater-chaos-orb" || c === "greater-chaos") {
+    return amount * fx.exaltPerChaos;
+  }
+  if (c === "perfect-chaos-orb" || c === "perfect-chaos") {
+    return amount * fx.exaltPerChaos;
+  }
   return null;
 }
 
-/**
- * Keep only listings inside [floor, ceiling].
- * Never falls back to dust/outliers — empty is better than wrong.
- */
 export function filterBuyListings(
   listings: PricedListing[],
   opts?: { floorEx?: number; ceilingEx?: number },
@@ -173,12 +175,8 @@ export function filterDustBuyListings(
 }
 
 /**
- * Buy price after conversion to exalt.
- *
- * Trade returns results sorted by *raw* currency amount (15 vaal before 1 divine),
- * so our fetched sample is often thin once re-sorted in exalt. Using a fixed
- * buy@25 on a 29-listing book picks near the ask wall (e.g. 1div). Cap depth to
- * ~35% of the converted book so thin samples stay near the liquid floor.
+ * Buy price: nth cheapest after exalt sort.
+ * Hot markets use a shallow depth (~10); cold markets use patience depth.
  */
 export function estimateBuyPriceEx(
   listings: PricedListing[],
@@ -190,22 +188,18 @@ export function estimateBuyPriceEx(
     .sort((a, b) => a - b);
   if (!sorted.length) return null;
 
-  // Tiny books: median (avoid the lone ask-wall outlier)
   if (sorted.length < 6) {
     return sorted[Math.floor((sorted.length - 1) / 2)];
   }
 
-  // Deep books: classic buy@N
   if (sorted.length >= n * 2) {
-    return sorted[n - 1];
+    return sorted[Math.min(n, sorted.length) - 1];
   }
 
-  // Medium/thin: ~35th percentile of the converted sample
   const depth = Math.min(n, Math.max(3, Math.floor(sorted.length * 0.35)));
   return sorted[depth - 1];
 }
 
-/** Human-readable note for debug traces. */
 export function buyEstimateNote(sampleSize: number, n = BUY_DEPTH_N): string {
   if (!sampleSize) return "empty";
   if (sampleSize < 6) return `median (n=${sampleSize})`;
@@ -214,12 +208,69 @@ export function buyEstimateNote(sampleSize: number, n = BUY_DEPTH_N): string {
   return `p~35% (n=${sampleSize}→@${depth})`;
 }
 
+export function buyDepthForRegime(
+  regime: MarketFlowRegime,
+  coldDepth = BUY_DEPTH_COLD_DEFAULT,
+): number {
+  if (regime === "hot") return BUY_DEPTH_HOT;
+  if (regime === "cold") return Math.max(5, coldDepth);
+  return Math.max(BUY_DEPTH_HOT, Math.min(coldDepth, BUY_DEPTH_N));
+}
+
+function listingFingerprint(l: PricedListing): string {
+  return `${l.priceEx}|${l.currency ?? ""}|${l.indexedAt ?? ""}`;
+}
+
 /**
- * Sell price after exalt conversion.
- *
- * Prefer a recently-stale clearing ask when the book has depth; on thin books
- * (typical crafted combos) undercut the live floor — "cheapest stale" alone
- * often picks a lone underpriced ghost.
+ * Compare two samples of the same query. Hot = book below ceiling gained
+ * enough new fingerprints (refilling). Cold = no meaningful refill.
+ */
+export function classifyMarketFlow(
+  first: PricedListing[],
+  second: PricedListing[],
+  opts?: {
+    ceilingEx?: number;
+    minNew?: number;
+  },
+): MarketFlowRegime {
+  if (!first.length && !second.length) return "unknown";
+  const minNew = opts?.minNew ?? FLOW_PROBE_MIN_NEW;
+
+  const ceiling =
+    opts?.ceilingEx ??
+    (() => {
+      const sorted = first
+        .map((l) => l.priceEx)
+        .filter((p) => Number.isFinite(p) && p > 0)
+        .sort((a, b) => a - b);
+      if (!sorted.length) return Number.POSITIVE_INFINITY;
+      // ~15th cheapest or last — band we care about grabbing
+      const idx = Math.min(sorted.length - 1, Math.max(9, BUY_DEPTH_HOT - 1));
+      return sorted[idx] * 1.15;
+    })();
+
+  const below = (xs: PricedListing[]) =>
+    xs.filter((l) => Number.isFinite(l.priceEx) && l.priceEx <= ceiling);
+
+  const a = below(first);
+  const b = below(second);
+  if (!a.length && !b.length) return "unknown";
+
+  const firstKeys = new Set(a.map(listingFingerprint));
+  let newCount = 0;
+  for (const l of b) {
+    if (!firstKeys.has(listingFingerprint(l))) newCount += 1;
+  }
+
+  if (newCount >= minNew) return "hot";
+  // Also hot if count below ceiling grew meaningfully (bulk refill same prices)
+  if (b.length >= a.length + minNew) return "hot";
+  return "cold";
+}
+
+/**
+ * Sell: cheapest ≥24h listing is the stale anchor; undercut the highest ask
+ * strictly below that anchor (the active pack). Thin books undercut harder.
  */
 export function estimateSellPriceEx(
   listings: PricedListing[],
@@ -227,6 +278,10 @@ export function estimateSellPriceEx(
     nowMs?: number;
     staleMs?: number;
     maxStaleAgeMs?: number;
+    undercutPct?: number;
+    thinUndercutPct?: number;
+    thinBook?: number;
+    /** @deprecated ignored — use undercutPct */
     hotUndercut?: number;
     ceilingEx?: number;
   },
@@ -234,8 +289,10 @@ export function estimateSellPriceEx(
   const nowMs = opts?.nowMs ?? Date.now();
   const staleMs = opts?.staleMs ?? SELL_STALE_MS;
   const maxStaleAgeMs = opts?.maxStaleAgeMs ?? SELL_MAX_STALE_AGE_MS;
-  const hotUndercut = opts?.hotUndercut ?? HOT_MARKET_UNDERCUT;
+  const thinBook = opts?.thinBook ?? SELL_THIN_BOOK;
   const ceilingEx = opts?.ceilingEx ?? SELL_MAX_EX;
+  const undercutPct = opts?.undercutPct ?? SELL_UNDERCUT_PCT;
+  const thinUndercutPct = opts?.thinUndercutPct ?? SELL_UNDERCUT_THIN_PCT;
 
   const priced = listings
     .filter(
@@ -253,26 +310,26 @@ export function estimateSellPriceEx(
     return nowMs - t;
   };
 
-  const fresh = priced.filter((l) => {
-    const age = ageMs(l);
-    return age == null || age < staleMs;
-  });
+  const pct =
+    priced.length < thinBook ? thinUndercutPct : undercutPct;
+  const applyUndercut = (ex: number) => ex * (1 - pct);
+
   const stale = priced.filter((l) => {
     const age = ageMs(l);
     return age != null && age >= staleMs && age <= maxStaleAgeMs;
   });
 
-  // Thin books: live floor × undercut (don't ride a single stale ghost)
-  if (priced.length < 6 || fresh.length > 0) {
-    const floor = (fresh.length ? fresh : priced)[0].priceEx;
-    // If a stale ask is near the live floor, prefer it as clearing price
-    if (stale.length && stale[0].priceEx <= floor * 1.15) {
-      return stale[0].priceEx;
+  if (stale.length) {
+    const anchor = stale[0]; // cheapest recently-stale
+    const below = priced.filter((l) => l.priceEx < anchor.priceEx - 1e-9);
+    if (below.length) {
+      const packLeader = below[below.length - 1];
+      return applyUndercut(packLeader.priceEx);
     }
-    return floor * hotUndercut;
+    // Nothing under the stale anchor — shave the anchor itself
+    return applyUndercut(anchor.priceEx);
   }
 
-  // Deep, all-stale book: cheapest recently-stale clearing ask
-  if (stale.length) return stale[0].priceEx;
-  return priced[0].priceEx * hotUndercut;
+  // No usable stale: undercut live floor
+  return applyUndercut(priced[0].priceEx);
 }

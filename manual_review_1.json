@@ -1,0 +1,119 @@
+{
+  "baseId": "temple_tablet",
+  "baseName": "Temple Tablet",
+  "source": "recovered from Electron localStorage + combo follow-ups",
+  "chaosSlamSample": {
+    "n": 32.5,
+    "crystalHits": 1,
+    "note": "One-affix chaos on trash rares; ~1 crystal / 30–35 slams"
+  },
+  "craftSample": {
+    "bought": 28,
+    "avgCostEx": 70,
+    "magicOrTaPresence": {
+      "crystal": 1,
+      "pack_size": 5,
+      "effectiveness": 6,
+      "beacon_pack": 8,
+      "rare_chests": 3,
+      "item_quantity": 4,
+      "item_rarity": 3
+    },
+    "alchN": 27,
+    "alchPresence": {
+      "crystal": 4,
+      "pack_size": 11,
+      "effectiveness": 8,
+      "beacon_pack": 15,
+      "rare_chests": 7,
+      "item_quantity": 4,
+      "item_rarity": 12
+    },
+    "notes": [
+      "Regal+ex on crystal magic: other two mods were vaal-beacon unique monster + increased magic monsters (not tracked as premium).",
+      "Crystal weight blend: alch 4/27 + magic 1/28 + chaos ~1/32.5 → wc≈2210 (was 2575 alch-only).",
+      "Dump floor updated to ~60ex; reforge non-crystal 3→1 until <3 left then dump residual."
+    ]
+  },
+  "anchors": {
+    "blankBuyEx": null,
+    "dumpEx": 60,
+    "note": "Blank buy not seeded — NaN until live sync. Dump/mids from survey."
+  },
+  "singles": [
+    { "key": "anchor:blank", "label": "Blank buy", "sellEx": 100, "octave": 1.0 },
+    { "key": "anchor:dump", "label": "Dump floor", "sellEx": 60, "octave": 0 },
+    { "key": "single:map_pack_size_t2", "filter": "#% increased Pack Size in Map", "min": 4, "sellEx": 75, "octave": 0.58 },
+    { "key": "single:map_quantity_t2", "filter": "#% increased Quantity of Items found in Map", "min": 5, "sellEx": null, "noResults": true },
+    { "key": "single:junk_gold_t1", "filter": "#% increased Gold found in Map", "min": 25, "sellEx": 79, "octave": 0.66 },
+    { "key": "single:junk_xp_t1", "filter": "#% increased Experience gain in Map", "min": 12, "sellEx": 80, "octave": 0.68 },
+    { "key": "single:map_rarity_t1", "filter": "#% increased Rarity of Items found in Map", "min": 10, "sellEx": 79, "octave": 0.66 },
+    { "key": "single:map_quantity_t1", "filter": "#% increased Quantity of Items found in Map", "min": 10, "sellEx": null, "noResults": true },
+    { "key": "single:temple_beacon_pack_t1", "filter": "#% increased Pack Size for Monsters around Vaal Beacons in Map", "min": 10, "sellEx": 79, "octave": 0.66 },
+    { "key": "single:temple_crystal_t1", "filter": "#% chance to gain an additional Crystal from Vaal Beacons in Map", "min": 5, "sellEx": 775, "octave": 3.95 },
+    { "key": "single:temple_chest_rare_t1", "filter": "#% increased chance Vaal Beacon Chests are Rare in Map", "min": 30, "sellEx": 79, "octave": 0.66 },
+    { "key": "single:junk_extra_shrine_t1", "filter": "Map contains # additional Shrines", "min": 1, "sellEx": 80, "octave": 0.68 },
+    { "key": "single:junk_extra_strongbox_t1", "filter": "Map contains # additional Strongboxes", "min": 1, "sellEx": 80, "octave": 0.68 },
+    { "key": "single:junk_monster_eff_t1", "filter": "Monsters have #% increased Effectiveness", "min": 10, "sellEx": 80, "octave": 0.68 }
+  ],
+  "combos": [
+    {
+      "key": "pair:map_pack_size_t2+map_quantity_t1",
+      "filters": ["Pack Size min 4", "Quantity min 10"],
+      "sellEx": null,
+      "noResults": true,
+      "note": "recommended pair #1"
+    },
+    {
+      "key": "pair:map_pack_size_t2+map_rarity_t1",
+      "filters": ["Pack Size min 4", "Rarity min 10"],
+      "sellEx": 80,
+      "liftVsMaxSingle": 0.01,
+      "note": "≈ max(pack 75, rarity 79) — no synergy"
+    },
+    {
+      "key": "pair:map_quantity_t2+map_quantity_t1",
+      "filters": ["Quantity min 5 (prefix)", "Quantity min 10 (suffix)"],
+      "sellEx": null,
+      "noResults": true,
+      "note": "recommended pair #3"
+    },
+    {
+      "key": "pair:map_pack_size_t2+temple_crystal_t1",
+      "filters": ["Pack Size min 4", "Crystal chance min 5"],
+      "sellEx": 775,
+      "liftVsMaxSingle": 0,
+      "note": "same as crystal solo — pack adds no lift"
+    },
+    {
+      "key": "pair:junk_monster_eff_t1+temple_crystal_t1",
+      "filters": ["Monster Effectiveness min 10", "Crystal chance min 5"],
+      "sellEx": 775,
+      "liftVsMaxSingle": 0,
+      "note": "no multiplier lift vs crystal solo"
+    },
+    {
+      "key": "pair:junk_monster_eff_t1+map_pack_size_t2",
+      "filters": ["Monster Effectiveness min 10", "Pack Size min 4"],
+      "sellEx": 80,
+      "liftVsMaxSingle": 0,
+      "note": "mid-band only"
+    },
+    {
+      "key": "triple:junk_monster_eff_t1+map_pack_size_t2+temple_crystal_t1",
+      "filters": ["Monster Effectiveness min 10", "Pack Size min 4", "Crystal chance min 5"],
+      "sellEx": 775,
+      "liftVsMaxSingle": 0,
+      "note": "still crystal floor — support mods unpaid"
+    }
+  ],
+  "takeaways": [
+    "Crystal (additional from Vaal Beacons) is the only premium solo: curve E[p]≈1230ex; floor asks ~775.",
+    "Almost everything else prices into a flat ~75–80ex mid band (slightly above dump ~60) — treat as low-B / soft-junk for Temple, not true premium.",
+    "Quantity filters (both T1 and T2) returned no liquid results alone or with pack — thin book, don't calibrate tiers from qty yet.",
+    "Monster Effectiveness solo is mid-band (80). Paired with Crystal (or Pack+Crystal) it still sells at 775 — no observed multiplier premium on trade.",
+    "Temple market appears single-mod driven: buyers pay for Crystal; pack/eff/rarity do not stack price.",
+    "Chaos ~1/32.5 to crystal + alch/magic presence → wc≈2210. At that rate chaos-until-crystal loses to dump; prefer reforge 3→1 (dump residual <3) when marginal vs list is positive for Reforge.",
+    "MDP: per-tier actions; EV shown as marginal vs immediate list/dump (=0)."
+  ]
+}

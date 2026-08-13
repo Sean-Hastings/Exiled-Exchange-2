@@ -106,9 +106,11 @@ describe("TabletEVEngine", () => {
     const engine = new TabletEVEngine(market);
     const result = engine.calculateBaseEV("breach_tablet");
     // Old bug: E[gross] ≈ tiny mass × premium ≈ near 0 → EV ≈ −base
-    // Junk-diluted 2p+2s still prices the long tail at dump, not 0
+    // Junk-diluted 2p+2s still prices the long tail at dump, not 0.
+    // One-affix chaos-until-hit is slower than a full redraw, so craft EV
+    // can be more negative when chaos is the trash action.
     expect(result.expectedGrossValue).toBeGreaterThan(30);
-    expect(result.netEV).toBeGreaterThan(-300);
+    expect(result.netEV).toBeGreaterThan(-500);
   });
 
   it("explainStrategies surfaces roll buckets and blank/rare revenue", () => {
@@ -117,7 +119,10 @@ describe("TabletEVEngine", () => {
     expect(x.rollOutcomes.length).toBeGreaterThan(0);
     expect(x.expectedRollRevenueEx).toBeGreaterThan(0);
     expect(x.blank.some((b) => b.strategy === "Scour-Alch")).toBe(true);
-    expect(x.rare.some((r) => r.strategy === "Chaos-Spam")).toBe(true);
+    expect(x.rare.length).toBe(4); // S/A/B/Trash marginal rows
+    expect(x.rare.every((r) => r.note?.includes("marginal vs sell"))).toBe(true);
+    expect(x.tierRegexes.map((t) => t.tier)).toEqual(["S", "A", "B"]);
+    expect(x.tierRegexes.some((t) => t.modIds.length > 0)).toBe(true);
     const scour = x.blank.find((b) => b.strategy === "Scour-Alch")!;
     const revSum = scour.outcomes.reduce((s, o) => s + o.revenueEx, 0);
     expect(revSum).toBeCloseTo(scour.expectedRevenueEx, 4);

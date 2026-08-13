@@ -38,6 +38,11 @@ export interface TabletBaseDefinition {
   allowedPrefixPool: string[];
   allowedSuffixPool: string[];
   maxAffixes: number;
+  /**
+   * Optional per-base weight overrides (empirical craft samples).
+   * When set, replaces {@link TabletModDefinition.weight} for this base only.
+   */
+  weightOverrides?: Record<string, number>;
 }
 
 export interface ParsedTabletMod {

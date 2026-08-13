@@ -14,15 +14,21 @@ import { TABLET_BASES, getHighValueModsForBase } from "./mod-weights";
 import { createEmptyMarketCache } from "./default-market";
 import { isFinitePositive } from "./market-sanity";
 import {
+  BUY_DEPTH_COLD_DEFAULT,
+  BUY_DEPTH_HOT,
   BUY_DEPTH_N,
   BUY_DUST_FLOOR_EX,
   BUY_MAX_EX,
+  FLOW_PROBE_MS,
   SELL_MAX_EX,
+  buyDepthForRegime,
   buyEstimateNote,
+  classifyMarketFlow,
   estimateBuyPriceEx,
   estimateSellPriceEx,
   listingAmountToExalt,
   type ExaltFx,
+  type MarketFlowRegime,
   type PricedListing,
 } from "./trade-price-estimators";
 import type {
@@ -55,7 +61,7 @@ import {
 export type { MarketSyncDebug } from "./market-sync-debug";
 
 /** Bump when conversion / estimator semantics change — invalidates persisted cache. */
-export const MARKET_SYNC_REVISION = 17;
+export const MARKET_SYNC_REVISION = 19;
 
 /** Buy blanks: enough depth for buy@N after mixed-currency re-sort. */
 const BUY_LISTING_SAMPLE = 30;
@@ -489,11 +495,13 @@ async function searchBuyPriceEx(
   isCancelled: () => boolean,
   buyFloor: number,
   buyCeiling: number,
+  buyDepth: number = BUY_DEPTH_N,
 ): Promise<{
   price: number;
   sampleSize: number;
   status: "securable" | "available";
   mix: string;
+  priced: PricedListing[];
   traces: SearchDebugTrace[];
 } | null> {
   const traces: SearchDebugTrace[] = [];
@@ -521,6 +529,7 @@ async function searchBuyPriceEx(
     sampleSize: number;
     status: "securable" | "available";
     mix: string;
+    priced: PricedListing[];
   } | null = null;
 
   for (const band of bands) {
@@ -561,7 +570,7 @@ async function searchBuyPriceEx(
         leg.sample,
       );
       const legPriced = hit.priced;
-      const legPrice = estimateBuyPriceEx(legPriced, BUY_DEPTH_N);
+      const legPrice = estimateBuyPriceEx(legPriced, buyDepth);
       traces.push(
         buildSearchTrace({
           kind: band.kind,
@@ -574,7 +583,7 @@ async function searchBuyPriceEx(
           rows: hit.rows,
           priced: legPriced,
           estimate: legPrice,
-          estimateNote: `${buyEstimateNote(legPriced.length, BUY_DEPTH_N)} · ${leg.tag}`,
+          estimateNote: `${buyEstimateNote(legPriced.length, buyDepth)} · ${leg.tag}`,
           floorEx: buyFloor,
           ceilingEx: buyCeiling,
         }),
@@ -589,7 +598,7 @@ async function searchBuyPriceEx(
     }
 
     const priced = keptToPriced(mergedRows);
-    const price = estimateBuyPriceEx(priced, BUY_DEPTH_N);
+    const price = estimateBuyPriceEx(priced, buyDepth);
     traces.push(
       buildSearchTrace({
         kind: band.kind,
@@ -605,7 +614,7 @@ async function searchBuyPriceEx(
           ),
         priced,
         estimate: price,
-        estimateNote: `${buyEstimateNote(priced.length, BUY_DEPTH_N)} · merged (ex-sorted display)`,
+        estimateNote: `${buyEstimateNote(priced.length, buyDepth)} · merged (ex-sorted display)`,
         floorEx: buyFloor,
         ceilingEx: buyCeiling,
       }),
@@ -618,10 +627,11 @@ async function searchBuyPriceEx(
       sampleSize: priced.length,
       status: band.status,
       mix: currencyMixSummary(priced),
+      priced,
     };
 
     if (
-      priced.length >= BUY_DEPTH_N ||
+      priced.length >= buyDepth ||
       priced.length >= ONLINE_GOOD_ENOUGH
     ) {
       return { ...candidate, traces };
@@ -636,7 +646,24 @@ async function searchBuyPriceEx(
   return { ...best, traces };
 }
 
-/** Sell (crafted value): cheapest stale (≥1d) else live floor × 0.95. */
+async function sleepCancellable(
+  ms: number,
+  isCancelled: () => boolean,
+  progress: ProgressFn,
+  label: string,
+): Promise<void> {
+  const end = Date.now() + Math.max(0, ms);
+  while (Date.now() < end) {
+    if (isCancelled()) throw new Error("Market sync cancelled");
+    const left = Math.max(0, Math.ceil((end - Date.now()) / 1000));
+    progress(`${label} (${left}s)…`);
+    await new Promise((r) =>
+      setTimeout(r, Math.min(1000, Math.max(0, end - Date.now()))),
+    );
+  }
+}
+
+/** Sell: stale-anchor + undercut pack below (see estimateSellPriceEx). */
 async function searchSellPriceEx(
   body: TabletTradeSearchBody,
   leagueId: string,
@@ -674,7 +701,8 @@ async function searchSellPriceEx(
         rows: hit.rows,
         priced: hit.priced,
         estimate: price,
-        estimateNote: price != null ? "live floor / near-stale" : "empty",
+        estimateNote:
+          price != null ? "stale-anchor + undercut pack-below" : "empty",
         floorEx: 0,
         ceilingEx: sellCeiling,
       }),
@@ -909,10 +937,22 @@ export async function syncTabletMarketFromTrade(opts?: {
   seedMarket?: MarketPriceCache;
   onProgress?: (detail: string) => void;
   isCancelled?: () => boolean;
+  /** Cold-market buy depth (patience). Hot uses BUY_DEPTH_HOT after flow probe. */
+  coldBuyDepth?: number;
+  /** Delay between buy snapshots for flow detection (ms). */
+  flowProbeMs?: number;
+  /** Set false to skip re-query (single snapshot, unknown regime → cold depth). */
+  flowProbe?: boolean;
 }): Promise<MarketSyncResult> {
   const combosPerBase = opts?.combosPerBase ?? 8;
   const progress = opts?.onProgress ?? (() => undefined);
   const isCancelled = opts?.isCancelled ?? (() => false);
+  const coldBuyDepth = Math.max(
+    5,
+    opts?.coldBuyDepth ?? BUY_DEPTH_COLD_DEFAULT,
+  );
+  const flowProbeMs = opts?.flowProbeMs ?? FLOW_PROBE_MS;
+  const flowProbeEnabled = opts?.flowProbe !== false;
   const filterIds = opts?.baseIds?.length
     ? new Set(opts.baseIds.filter((id) => !!TABLET_BASES[id]))
     : null;
@@ -1043,6 +1083,17 @@ export async function syncTabletMarketFromTrade(opts?: {
   }
 
   try {
+    type PendingBuy = {
+      base: (typeof bases)[number];
+      ctx: string;
+      typeName: string;
+      snap1: NonNullable<Awaited<ReturnType<typeof searchBuyPriceEx>>>;
+      fetchedAt: number;
+      entry: BaseBuyDebugTrace;
+    };
+    const pendingBuys: PendingBuy[] = [];
+
+    // Phase 1 — first buy snapshots for every base (weaves into probe wait).
     let baseIdx = 0;
     for (const base of bases) {
       if (isCancelled()) throw new Error("Market sync cancelled");
@@ -1050,7 +1101,7 @@ export async function syncTabletMarketFromTrade(opts?: {
       const ctx = filterIds
         ? `Blank: ${base.name}`
         : `Blank ${baseIdx}/${bases.length}: ${base.name}`;
-      progress(`${ctx} (10 uses)…`);
+      progress(`${ctx} probe#1…`);
 
       const typeNames = tradeTypeNamesForBase(base);
       const entry: BaseBuyDebugTrace = {
@@ -1069,22 +1120,23 @@ export async function syncTabletMarketFromTrade(opts?: {
             leagueId,
             fx,
             progress,
-            ctx,
+            `${ctx} #1`,
             isCancelled,
             buyFloor,
             buyCeiling,
+            coldBuyDepth,
           );
           if (hit) {
             entry.searches.push(...hit.traces);
             if (isFinitePositive(hit.price)) {
-              market.basePrices[base.id] = hit.price;
-              stats.basesPriced++;
-              entry.finalBuy = hit.price;
-              entry.finalStatus = hit.status;
-              console.info(
-                `[tablet-market] ${base.name} buy=${hit.price.toFixed(1)}ex ` +
-                  `n=${hit.sampleSize} mix=${hit.mix} (${hit.status})`,
-              );
+              pendingBuys.push({
+                base,
+                ctx,
+                typeName,
+                snap1: hit,
+                fetchedAt: Date.now(),
+                entry,
+              });
               break;
             }
           }
@@ -1110,41 +1162,123 @@ export async function syncTabletMarketFromTrade(opts?: {
           );
         }
       }
-      baseDebug.push(entry);
-      if (entry.finalBuy == null) {
+      if (!pendingBuys.some((p) => p.base.id === base.id)) {
+        baseDebug.push(entry);
         console.warn(`[tablet-market] no 10-use blank listings for ${base.name}`);
       }
+    }
+
+    // Wait out remaining probe delay (snap#1 across bases already burned time).
+    if (flowProbeEnabled && pendingBuys.length) {
+      const oldest = Math.min(...pendingBuys.map((p) => p.fetchedAt));
+      const waitMore = flowProbeMs - (Date.now() - oldest);
+      if (waitMore > 500) {
+        await sleepCancellable(
+          waitMore,
+          isCancelled,
+          progress,
+          "Flow probe wait",
+        );
+      }
+    }
+
+    // Phase 2 — re-query, classify hot/cold, commit buy@depth.
+    for (const pending of pendingBuys) {
+      if (isCancelled()) throw new Error("Market sync cancelled");
+      const { base, ctx, typeName, snap1, entry } = pending;
+      progress(`${ctx} probe#2…`);
+
+      let regime: MarketFlowRegime = "unknown";
+      let priced = snap1.priced;
+      let status = snap1.status;
+      let mix = snap1.mix;
+      let sampleSize = snap1.sampleSize;
+
+      if (flowProbeEnabled) {
+        try {
+          const snap2 = await searchBuyPriceEx(
+            typeName,
+            leagueId,
+            fx,
+            progress,
+            `${ctx} #2`,
+            isCancelled,
+            buyFloor,
+            buyCeiling,
+            coldBuyDepth,
+          );
+          if (snap2) {
+            entry.searches.push(...snap2.traces);
+            regime = classifyMarketFlow(snap1.priced, snap2.priced);
+            priced = snap2.priced.length ? snap2.priced : snap1.priced;
+            status = snap2.status;
+            mix = snap2.mix;
+            sampleSize = priced.length;
+          } else {
+            regime = "cold";
+          }
+        } catch (e) {
+          if (isCancelled()) throw e;
+          console.warn(`[tablet-market] flow probe ${typeName}`, e);
+          regime = "unknown";
+        }
+      }
+
+      const depth = buyDepthForRegime(regime, coldBuyDepth);
+      const price = estimateBuyPriceEx(priced, depth);
+      entry.searches.push(
+        buildSearchTrace({
+          kind: "buy-online",
+          label: `${ctx} flow=${regime} buy@${depth}`,
+          typeName,
+          rows: [],
+          priced,
+          estimate: price,
+          estimateNote: `flow=${regime} · ${buyEstimateNote(priced.length, depth)}`,
+          floorEx: buyFloor,
+          ceilingEx: buyCeiling,
+        }),
+      );
+
+      if (price != null && isFinitePositive(price)) {
+        market.basePrices[base.id] = price;
+        stats.basesPriced++;
+        entry.finalBuy = price;
+        entry.finalStatus = status;
+        console.info(
+          `[tablet-market] ${base.name} buy=${price.toFixed(1)}ex ` +
+            `n=${sampleSize} mix=${mix} flow=${regime} @${depth}`,
+        );
+      }
+      baseDebug.push(entry);
 
       // Junk/rare floor for EV long-tail (unmeasured combos)
-      if (entry.typeNamesTried[0]) {
-        const junkCtx = filterIds
-          ? `Junk: ${base.name}`
-          : `Junk ${baseIdx}/${bases.length}: ${base.name}`;
-        progress(junkCtx);
-        const { price, trace } = await searchSellPriceEx(
-          junkTabletQuery(entry.typeNamesTried[0]),
-          leagueId,
-          fx,
-          progress,
-          junkCtx,
-          entry.typeNamesTried[0],
-          isCancelled,
-          sellCeiling,
-          JUNK_LISTING_SAMPLE,
-        );
-        // Re-tag kind for debug clarity
-        trace.kind = "sell-junk";
-        comboDebug.push({
-          baseId: base.id,
-          baseName: base.name,
-          comboKey: "__junk__",
-          finalSell: price,
-          search: trace,
-        });
-        if (price != null && isFinitePositive(price)) {
-          market.junkSellByBase = market.junkSellByBase ?? {};
-          market.junkSellByBase[base.id] = price;
-        }
+      const junkCtx = filterIds
+        ? `Junk: ${base.name}`
+        : `Junk: ${base.name}`;
+      progress(junkCtx);
+      const { price: junkPrice, trace } = await searchSellPriceEx(
+        junkTabletQuery(typeName),
+        leagueId,
+        fx,
+        progress,
+        junkCtx,
+        typeName,
+        isCancelled,
+        sellCeiling,
+        JUNK_LISTING_SAMPLE,
+      );
+      trace.kind = "sell-junk";
+      comboDebug.push({
+        baseId: base.id,
+        baseName: base.name,
+        comboKey: "__junk__",
+        finalSell: junkPrice,
+        search: trace,
+      });
+      if (junkPrice != null && isFinitePositive(junkPrice)) {
+        market.junkSellByBase = market.junkSellByBase ?? {};
+        market.junkSellByBase[base.id] = junkPrice;
       }
     }
 
@@ -1253,7 +1387,7 @@ export async function syncTabletMarketFromTrade(opts?: {
     scopeLabel ? `only:${scopeLabel}` : null,
     stats.currenciesPriced ? "ninja orbs" : null,
     stats.basesPriced
-      ? `${stats.basesPriced} bases(buy@${BUY_DEPTH_N},10u)`
+      ? `${stats.basesPriced} bases(buy@hot${BUY_DEPTH_HOT}/cold${coldBuyDepth}${flowProbeEnabled ? "+flow" : ""},10u)`
       : null,
     stats.combosPriced ? `${stats.combosPriced} combos(sell)` : null,
     `${exaltPerChaos.toFixed(0)}ex/c`,

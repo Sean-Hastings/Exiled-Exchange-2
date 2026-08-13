@@ -6,20 +6,24 @@
   >
     <div class="flex items-start justify-between gap-2">
       <div class="min-w-0">
-        <div class="font-semibold tracking-wide">
-          {{ actionLabel }}
+        <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+          <span class="font-semibold tracking-wide">{{ actionLabel }}</span>
+          <span
+            class="text-xs px-1 rounded border border-current/40 opacity-90"
+            >{{ evaluation.rareTier }}</span
+          >
+          <span class="text-base font-semibold tabular-nums">
+            ~{{ fmtEx(evaluation.currentMarketPrice) }}ex
+          </span>
         </div>
         <div class="text-xs opacity-90 mt-0.5 leading-snug">
+          {{ evaluation.sellDetail }}
+          <span class="opacity-70"> · {{ evaluation.sellBasis }}</span>
+        </div>
+        <div class="text-xs opacity-80 mt-0.5 leading-snug">
           {{ evaluation.explanation }}
         </div>
         <div class="text-xs mt-1 opacity-75 flex flex-wrap gap-x-3 gap-y-0.5">
-          <span
-            >List ~{{
-              Number.isFinite(evaluation.currentMarketPrice)
-                ? evaluation.currentMarketPrice.toFixed(2)
-                : "NaN"
-            }}ex</span
-          >
           <span>Blank {{ evaluation.baseEV.blankStrategy }}</span>
           <span>Rare {{ evaluation.rareStrategy }}</span>
         </div>
@@ -69,6 +73,10 @@ onMounted(() => {
   void ensureTabletMarketSynced(false);
 });
 
+function fmtEx(n: number): string {
+  return Number.isFinite(n) ? n.toFixed(n >= 100 ? 0 : 1) : "NaN";
+}
+
 const actionLabel = computed(() => {
   switch (evaluation.value?.action) {
     case "SELL_AS_IS":
@@ -115,7 +123,7 @@ const regex = computed(() => {
       id: m.id,
       name: m.name,
       regexHint: m.regexHint,
-      minDesiredValue: Math.ceil((m.minValue + m.maxValue) / 2),
+      minDesiredValue: Math.ceil(m.minValue),
       priority: m.valueScore,
       highlightCategory: "high_value" as const,
     })),

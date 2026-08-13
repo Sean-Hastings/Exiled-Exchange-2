@@ -76,11 +76,14 @@ export class OverlayWindow {
       return;
     }
 
-    if (process.env.VITE_DEV_SERVER_URL) {
-      this.window.loadURL(url);
+    this.window.loadURL(url);
+    // Detached DevTools steals focus when the overlay activates (Shift+Space),
+    // which looks like the game "closing". Open via the window menu if needed.
+    if (
+      process.env.VITE_DEV_SERVER_URL &&
+      process.argv.includes("--devtools")
+    ) {
       this.window.webContents.openDevTools({ mode: "detach", activate: false });
-    } else {
-      this.window.loadURL(url);
     }
   }
 

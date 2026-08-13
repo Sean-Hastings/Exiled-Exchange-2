@@ -9,10 +9,13 @@ import {
   type MarketSyncStatus,
   syncTabletMarketFromTrade,
 } from "./tablet-market-sync";
+import { BUY_DEPTH_COLD_DEFAULT } from "./trade-price-estimators";
 import type { TierSurveyDocument } from "./tier-survey-types";
 import { TIER_SURVEY_REVISION } from "./tier-survey-types";
+import { applyTempleManualSurveyMarket } from "./temple-manual-market";
 
 const STORAGE_KEY = "ee2-tablet-market-cache";
+const BUY_PATIENCE_KEY = "ee2-tablet-buy-patience-depth";
 
 interface PersistedMarket {
   revision: number;
@@ -24,6 +27,37 @@ interface PersistedMarket {
 export interface TabletMarketSyncOpts {
   /** When set, only re-price these bases and merge into the existing cache. */
   baseIds?: string[];
+  /** Cold-market buy depth (patience). Hot books still use ~10 after flow probe. */
+  coldBuyDepth?: number;
+  /** Re-query delay for hot/cold detection (ms). */
+  flowProbeMs?: number;
+  /** Set false to skip the second buy snapshot. */
+  flowProbe?: boolean;
+}
+
+function loadColdBuyDepth(): number {
+  try {
+    const raw = localStorage.getItem(BUY_PATIENCE_KEY);
+    if (!raw) return BUY_DEPTH_COLD_DEFAULT;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return BUY_DEPTH_COLD_DEFAULT;
+    return Math.max(5, Math.min(50, Math.round(n)));
+  } catch {
+    return BUY_DEPTH_COLD_DEFAULT;
+  }
+}
+
+/** Cold-market patience depth — persisted; hot markets still buy near depth 10. */
+export const tabletColdBuyDepth = shallowRef(loadColdBuyDepth());
+
+export function setTabletColdBuyDepth(depth: number) {
+  const next = Math.max(5, Math.min(50, Math.round(depth)));
+  tabletColdBuyDepth.value = next;
+  try {
+    localStorage.setItem(BUY_PATIENCE_KEY, String(next));
+  } catch {
+    /* ignore */
+  }
 }
 
 function loadPersisted(): PersistedMarket | null {
@@ -57,23 +91,39 @@ function savePersisted(
   }
 }
 
+/** Persist + keep Temple manual survey sales authoritative. */
+function commitMarket(
+  market: MarketPriceCache,
+  updatedAt: number,
+  source: string,
+): MarketPriceCache {
+  const next = applyTempleManualSurveyMarket(market);
+  savePersisted(next, updatedAt, source);
+  return next;
+}
+
 function hydrateFromStorage(): {
   market: MarketPriceCache;
   status: MarketSyncStatus;
 } {
   const hit = loadPersisted();
   if (!hit) {
+    const market = applyTempleManualSurveyMarket(createEmptyMarketCache());
     return {
-      market: createEmptyMarketCache(),
-      status: { state: "idle" },
+      market,
+      status: {
+        state: "ready",
+        updatedAt: Date.now(),
+        source: "temple manual survey (no trade cache yet)",
+      },
     };
   }
   return {
-    market: hit.market,
+    market: applyTempleManualSurveyMarket(hit.market),
     status: {
       state: "ready",
       updatedAt: hit.updatedAt,
-      source: `${hit.source} (cached)`,
+      source: `${hit.source} + temple manual survey`,
     },
   };
 }
@@ -131,6 +181,9 @@ export async function ensureTabletMarketSynced(
         combosPerBase: 8,
         baseIds,
         seedMarket: partial ? tabletMarketCache.value : undefined,
+        coldBuyDepth: opts?.coldBuyDepth ?? tabletColdBuyDepth.value,
+        flowProbeMs: opts?.flowProbeMs,
+        flowProbe: opts?.flowProbe,
         isCancelled: () => gen !== syncGeneration,
         onProgress: (detail) => {
           if (gen !== syncGeneration) return;
@@ -147,25 +200,37 @@ export async function ensureTabletMarketSynced(
       ) {
         return;
       }
-      tabletMarketCache.value = result.market;
-      tabletMarketStatus.value = result.status;
+      const stamped =
+        result.status.state === "ready"
+          ? commitMarket(
+              result.market,
+              result.status.updatedAt,
+              `${result.status.source} + temple manual survey`,
+            )
+          : applyTempleManualSurveyMarket(result.market);
+      tabletMarketCache.value = stamped;
+      tabletMarketStatus.value =
+        result.status.state === "ready"
+          ? {
+              ...result.status,
+              source: `${result.status.source} + temple manual survey`,
+            }
+          : result.status;
       if (result.debug) {
         tabletMarketDebug.value = partial
           ? mergeMarketSyncDebug(tabletMarketDebug.value, result.debug, baseIds!)
           : result.debug;
       }
-      if (result.status.state === "ready") {
-        savePersisted(
-          result.market,
-          result.status.updatedAt,
-          result.status.source,
-        );
-      } else if (
+      if (
         result.status.state === "error" &&
         result.status.partial &&
         result.stats.basesPriced > 0
       ) {
-        savePersisted(result.market, Date.now(), result.status.message);
+        tabletMarketCache.value = commitMarket(
+          result.market,
+          Date.now(),
+          `${result.status.message} + temple manual survey`,
+        );
       }
     } catch (e) {
       if (gen !== syncGeneration) return;

@@ -4,7 +4,7 @@
     @keydown="onKey"
   >
     <div class="flex items-center justify-between gap-2 text-amber-100">
-      <div class="font-semibold">Manual Breach survey</div>
+      <div class="font-semibold">Manual Temple survey</div>
       <div class="text-gray-400">
         {{ progress.done }}/{{ progress.total }}
         · ~{{ Math.max(progress.total - progress.done, 0) }} left
@@ -12,8 +12,9 @@
     </div>
 
     <div class="text-gray-400 leading-snug">
-      Trade/stash search with the regex → glance at liquid asks → type the
-      exalt price <b class="text-gray-200">you'd sell at</b> (undercut ok).
+      On trade: set <b class="text-gray-200">Type</b> + filter as shown → glance
+      at liquid asks → type the exalt price
+      <b class="text-gray-200">you'd sell at</b> (undercut ok).
       <span class="text-gray-500">Enter save · N no results · ← back</span>
     </div>
 
@@ -27,14 +28,35 @@
       </div>
       <div class="text-gray-200">{{ step.lookFor }}</div>
 
-      <div class="flex items-stretch gap-1">
-        <code
-          class="flex-1 truncate bg-black/50 border border-gray-700 rounded px-2 py-1 text-green-300 font-mono"
-          :title="step.regex"
-        >{{ step.regex }}</code>
-        <button type="button" class="btn text-xs shrink-0" @click="copyRegex">
-          {{ copied ? "Copied" : "Copy" }}
-        </button>
+      <div class="grid gap-1 text-gray-300">
+        <div>
+          <span class="text-gray-500">Type</span>
+          <span class="ml-1 text-green-300 font-mono">{{ step.typeName }}</span>
+        </div>
+        <div v-if="step.filterName" class="flex items-start gap-1">
+          <span class="text-gray-500 shrink-0">Filter</span>
+          <code
+            class="flex-1 whitespace-normal break-words bg-black/50 border border-gray-700 rounded px-2 py-1 text-green-300 font-mono"
+            :title="step.filterName"
+          >{{ step.filterName }}</code>
+          <button type="button" class="btn text-xs shrink-0" @click="copyFilter">
+            {{ copied ? "Copied" : "Copy" }}
+          </button>
+        </div>
+        <div v-else class="flex items-center gap-1">
+          <span class="text-gray-500">Filter</span>
+          <span class="text-gray-400 italic">none (type only)</span>
+          <button type="button" class="btn text-xs shrink-0 ml-auto" @click="copyFilter">
+            {{ copied ? "Copied" : "Copy type" }}
+          </button>
+        </div>
+        <div v-if="step.filterRangeLabel">
+          <span class="text-gray-500">Range</span>
+          <span class="ml-1 text-amber-200 font-semibold">{{ step.filterRangeLabel }}</span>
+          <span v-if="step.filterMin != null" class="text-gray-500 ml-1">
+            → set min {{ step.filterMin }}
+          </span>
+        </div>
       </div>
 
       <div class="flex flex-wrap items-center gap-1">
@@ -100,9 +122,11 @@ import {
   formatSurveyAnalysisMarkdown,
 } from "@/web/price-check/tablets/tier-survey-analyze";
 import {
-  buildManualBreachSteps,
+  MANUAL_SURVEY_BASE_ID,
+  buildManualSurveySteps,
   clearManualSession,
   emptyManualSession,
+  filterCopyText,
   loadManualSession,
   manualProgress,
   manualSessionToSurveyDoc,
@@ -114,9 +138,9 @@ import { tabletMarketCache } from "@/web/price-check/tablets/tablet-market-store
 
 defineEmits<{ close: [] }>();
 
-const steps = buildManualBreachSteps("breach_tablet");
+const steps = buildManualSurveySteps(MANUAL_SURVEY_BASE_ID);
 const session = ref<ManualSurveySession>(
-  loadManualSession() ?? emptyManualSession("breach_tablet"),
+  loadManualSession() ?? emptyManualSession(MANUAL_SURVEY_BASE_ID),
 );
 const idx = ref(0);
 const priceText = ref("");
@@ -139,10 +163,10 @@ function syncFromAnswer() {
     a && !a.noResults && a.sellEx != null ? String(a.sellEx) : "";
 }
 
-async function copyRegex() {
+async function copyFilter() {
   if (!step.value) return;
   try {
-    await navigator.clipboard.writeText(step.value.regex);
+    await navigator.clipboard.writeText(filterCopyText(step.value));
     copied.value = true;
     setTimeout(() => {
       copied.value = false;
@@ -156,13 +180,12 @@ function advanceAfterSave() {
   if (idx.value < steps.length - 1) {
     idx.value += 1;
   } else {
-    // stay on last; progress shows done
     session.value.cursor = idx.value;
   }
   session.value.cursor = idx.value;
   saveManualSession(session.value);
   syncFromAnswer();
-  void copyRegex();
+  void copyFilter();
   focusPrice();
 }
 
@@ -188,7 +211,7 @@ function goBack() {
   session.value.cursor = idx.value;
   saveManualSession(session.value);
   syncFromAnswer();
-  void copyRegex();
+  void copyFilter();
   focusPrice();
 }
 
@@ -198,7 +221,7 @@ function goNext() {
   session.value.cursor = idx.value;
   saveManualSession(session.value);
   syncFromAnswer();
-  void copyRegex();
+  void copyFilter();
   focusPrice();
 }
 
@@ -235,15 +258,43 @@ function copyJson() {
     analysisMarkdown: formatSurveyAnalysisMarkdown(analysis),
     manual: session.value,
   };
-  void navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+  const text = JSON.stringify(payload, null, 2);
+  void (async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      /* overlay often lacks clipboard permission when unfocused */
+    }
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    } catch {
+      // Last resort: open a downloadable blob in-overlay
+      const blob = new Blob([text], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "manual-temple-tier-survey.json";
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+  })();
 }
 
 function resetSession() {
   clearManualSession();
-  session.value = emptyManualSession("breach_tablet");
+  session.value = emptyManualSession(MANUAL_SURVEY_BASE_ID);
   idx.value = 0;
   priceText.value = "";
-  void copyRegex();
+  void copyFilter();
   focusPrice();
 }
 
@@ -260,7 +311,7 @@ onMounted(() => {
         ? p.nextIndex
         : Math.max(steps.length - 1, 0);
   syncFromAnswer();
-  void copyRegex();
+  void copyFilter();
   focusPrice();
 });
 </script>

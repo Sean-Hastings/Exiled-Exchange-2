@@ -1,6 +1,5 @@
-import { TABLET_MOD_WEIGHTS } from "./mod-weights";
+import { TABLET_BASES, TABLET_MOD_WEIGHTS } from "./mod-weights";
 import { modQualityTier } from "./mod-tiers";
-import { TabletRegexBuilder } from "./tablet-regex-builder";
 import { surveyModsForBase } from "./tier-survey-plan";
 import type {
   SurveyObservation,
@@ -9,17 +8,28 @@ import type {
 } from "./tier-survey-types";
 import { TIER_SURVEY_REVISION } from "./tier-survey-types";
 
-const STORAGE_KEY = "ee2-manual-breach-tier-survey-v1";
+/** Default calibration base for the hand-entry survey (market-dense). */
+export const MANUAL_SURVEY_BASE_ID = "temple_tablet";
 
-/** One step in the in-game manual pricing pass (stash regex + your sell price). */
+const STORAGE_KEY = "ee2-manual-temple-tier-survey-v1";
+
+/** One step in the trade-site manual pricing pass (filters + your sell price). */
 export interface ManualSurveyStep {
   key: string;
   kind: SurveyWorkItem["kind"];
   label: string;
-  /** Short cue for trade/stash browsing */
+  /** Short cue for browsing listings */
   lookFor: string;
-  /** PoE stash-search regex (≤50 chars, quoted) */
-  regex: string;
+  /** Trade Type filter (e.g. "Temple Tablet") */
+  typeName: string;
+  /** Trade explicit filter label to search/add; null for anchors */
+  filterName: string | null;
+  /** Min value to set on the trade filter (tier floor) */
+  filterMin: number | null;
+  /** Max roll for this mod tier (display only) */
+  filterMax: number | null;
+  /** Human range cue, e.g. "min 10 (rolls 10–30)" */
+  filterRangeLabel: string | null;
   modIds: string[];
   quality?: string;
 }
@@ -45,69 +55,89 @@ export interface ManualSurveySession {
   cursor: number;
 }
 
-function regexForModId(modId: string): string {
-  const m = TABLET_MOD_WEIGHTS[modId];
-  if (!m) return '""';
-  return TabletRegexBuilder.buildOptimizedRegex([
-    {
-      id: m.id,
-      name: m.name,
-      regexHint: m.regexHint,
-      minDesiredValue: m.minValue,
-      priority: m.valueScore,
-      highlightCategory: "high_value",
-    },
-  ]);
+function tradeTypeName(baseId: string): string {
+  return TABLET_BASES[baseId]?.name ?? baseId;
 }
 
-function shortModCue(modId: string): string {
+function filterNameForMod(modId: string): string {
   const m = TABLET_MOD_WEIGHTS[modId];
   if (!m) return modId;
-  const q = modQualityTier(modId);
-  const range =
-    m.minValue != null && m.maxValue != null
-      ? `${m.minValue}–${m.maxValue}%`
-      : m.minValue != null
-        ? `≥${m.minValue}%`
-        : "";
-  const token = (m.regexHint ?? m.id).split("|")[0].replace(/\.\*/g, " ");
-  return `${q} · ${token}${range ? ` ${range}` : ""}`;
+  return (m.statRef ?? m.name).trim();
+}
+
+function filterRangeLabel(min: number | null, max: number | null): string | null {
+  if (min == null && max == null) return null;
+  if (min != null && max != null) return `min ${min} (rolls ${min}–${max})`;
+  if (min != null) return `min ${min}`;
+  return `max ${max}`;
+}
+
+/** Clipboard text for the active trade filter (name, or type for anchors). */
+export function filterCopyText(step: ManualSurveyStep): string {
+  if (step.filterName) return step.filterName;
+  return step.typeName;
 }
 
 /**
  * Fast manual queue: anchors + singles only (~17).
  * Full pair grid is too slow for hand entry — calibrate tiers from singles.
  */
-export function buildManualBreachSteps(
-  baseId = "breach_tablet",
+export function buildManualSurveySteps(
+  baseId = MANUAL_SURVEY_BASE_ID,
 ): ManualSurveyStep[] {
+  const base = TABLET_BASES[baseId];
+  const label = base?.name ?? baseId;
+  const typeName = tradeTypeName(baseId);
   const { prefixes, suffixes } = surveyModsForBase(baseId);
   const steps: ManualSurveyStep[] = [
     {
       key: "anchor:blank",
       kind: "anchor-blank",
       label: "Blank buy",
-      lookFor: "Near-blank rare Breach tablet — price you'd buy at (ex)",
-      regex: '"Breach"',
+      lookFor: `Near-blank rare ${label} — price you'd buy at (ex)`,
+      typeName,
+      filterName: null,
+      filterMin: null,
+      filterMax: null,
+      filterRangeLabel: null,
       modIds: [],
     },
     {
       key: "anchor:dump",
       kind: "anchor-dump",
       label: "Dump floor",
-      lookFor: "Junk rare Breach tablet — price you'd dump/sell at (ex)",
-      regex: '"Breach"',
+      lookFor: `Junk rare ${label} — price you'd dump/sell at (ex)`,
+      typeName,
+      filterName: null,
+      filterMin: null,
+      filterMax: null,
+      filterRangeLabel: null,
       modIds: [],
     },
   ];
 
   for (const m of [...prefixes, ...suffixes]) {
+    const def = TABLET_MOD_WEIGHTS[m.id];
+    const min =
+      def && Number.isFinite(def.minValue) && def.minValue > 0
+        ? def.minValue
+        : m.minValue > 0
+          ? m.minValue
+          : null;
+    const max =
+      def && Number.isFinite(def.maxValue) && def.maxValue > 0
+        ? def.maxValue
+        : null;
     steps.push({
       key: `single:${m.id}`,
       kind: "single",
       label: `single ${m.id}`,
-      lookFor: shortModCue(m.id),
-      regex: regexForModId(m.id),
+      lookFor: `${modQualityTier(m.id)} · ${filterNameForMod(m.id)}`,
+      typeName,
+      filterName: filterNameForMod(m.id),
+      filterMin: min,
+      filterMax: max,
+      filterRangeLabel: filterRangeLabel(min, max),
       modIds: [m.id],
       quality: m.quality,
     });
@@ -115,8 +145,11 @@ export function buildManualBreachSteps(
   return steps;
 }
 
+/** @deprecated Prefer buildManualSurveySteps */
+export const buildManualBreachSteps = buildManualSurveySteps;
+
 export function emptyManualSession(
-  baseId = "breach_tablet",
+  baseId = MANUAL_SURVEY_BASE_ID,
 ): ManualSurveySession {
   const now = Date.now();
   return {
@@ -136,7 +169,7 @@ export function loadManualSession(): ManualSurveySession | null {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as ManualSurveySession;
-    if (parsed.baseId !== "breach_tablet") return null;
+    if (parsed.baseId !== MANUAL_SURVEY_BASE_ID) return null;
     if (parsed.revision !== TIER_SURVEY_REVISION) return null;
     return parsed;
   } catch {
@@ -246,11 +279,12 @@ export function manualSessionToSurveyDoc(
 
   const answered = Object.keys(session.answers).length;
   const complete = answered >= steps.length;
+  const baseName = TABLET_BASES[session.baseId]?.name ?? session.baseId;
 
   return {
     revision: TIER_SURVEY_REVISION,
     baseId: session.baseId,
-    baseName: "Breach Tablet",
+    baseName,
     leagueId: "manual",
     startedAt: session.startedAt,
     updatedAt: session.updatedAt,

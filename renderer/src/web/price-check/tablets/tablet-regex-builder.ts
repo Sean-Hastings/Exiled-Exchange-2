@@ -1,3 +1,6 @@
+import { TABLET_BASES, TABLET_MOD_WEIGHTS } from "./mod-weights";
+import { modQualityTier } from "./mod-tiers";
+
 export interface RegexTargetMod {
   id: string;
   name: string;
@@ -8,6 +11,14 @@ export interface RegexTargetMod {
   priority?: number;
 }
 
+export interface TierJudgementRegex {
+  /** Stash triage label (S / A / B); unmatched → Trash */
+  tier: "S" | "A" | "B";
+  regex: string;
+  modIds: string[];
+  note: string;
+}
+
 const STASH_LIMIT = 50;
 
 function numberRangePattern(min: number, max = 99): string {
@@ -16,7 +27,6 @@ function numberRangePattern(min: number, max = 99): string {
     const tens = Math.floor(min / 10);
     const ones = min % 10;
     if (min === max) return String(min);
-    // Compact ranges for common tablet thresholds
     if (ones === 0) {
       return `${tens}\\d|[${tens + 1}-9]\\d`;
     }
@@ -45,7 +55,6 @@ export class TabletRegexBuilder {
       patterns.push(this.patternFor(target));
     }
 
-    // Deduplicate while preserving order
     const unique = [...new Set(patterns.filter(Boolean))];
     return this.fitToLimit(unique);
   }
@@ -70,7 +79,6 @@ export class TabletRegexBuilder {
     if (target.regexHint) {
       if (target.minDesiredValue != null) {
         const range = numberRangePattern(target.minDesiredValue);
-        // Keep short: "35%.*pa" style when hint is a simple token
         if (!target.regexHint.includes("|") && target.regexHint.length <= 6) {
           return `(${range})%.*${target.regexHint}`;
         }
@@ -88,7 +96,10 @@ export class TabletRegexBuilder {
     if (target.id.includes("logbook")) {
       return "logb";
     }
-    if (target.id.includes("simulacrum") || target.id.includes("delirium_splinter")) {
+    if (
+      target.id.includes("simulacrum") ||
+      target.id.includes("delirium_splinter")
+    ) {
       return "simu";
     }
     if (target.id.includes("desecrated")) {
@@ -98,7 +109,6 @@ export class TabletRegexBuilder {
       return "ways";
     }
 
-    // Fallback: distinct 3–4 char token from the name
     const token = target.name
       .replace(/[^a-zA-Z]/g, "")
       .slice(0, 4)
@@ -117,9 +127,8 @@ export class TabletRegexBuilder {
       merged = `"${working.join("|")}"`;
     }
 
-    // If a single pattern is still too long, truncate aggressively
     if (merged.length > STASH_LIMIT) {
-      const innerBudget = STASH_LIMIT - 2; // quotes
+      const innerBudget = STASH_LIMIT - 2;
       const truncated = working[0].slice(0, Math.max(innerBudget, 1));
       merged = `"${truncated}"`;
     }
@@ -130,4 +139,69 @@ export class TabletRegexBuilder {
   public static withinLimit(regex: string): boolean {
     return regex.length <= STASH_LIMIT;
   }
+}
+
+function regexForModIds(ids: string[]): string {
+  const mods = ids
+    .map((id) => TABLET_MOD_WEIGHTS[id])
+    .filter((m): m is NonNullable<typeof m> => !!m);
+  if (!mods.length) return '""';
+  return TabletRegexBuilder.buildOptimizedRegex(
+    mods.map((m) => ({
+      id: m.id,
+      name: m.name,
+      regexHint: m.regexHint,
+      // Floor of roll range — do not invent a midpoint threshold
+      minDesiredValue: Math.ceil(m.minValue),
+      priority: m.valueScore,
+      highlightCategory: "high_value" as const,
+    })),
+  );
+}
+
+/**
+ * Per-tier stash regexes for a tablet base (quality S / A / B mods).
+ *
+ * Apply in order S → A → B. Anything that matches none → Trash.
+ *
+ * Stash cannot score multi-affix combos, so:
+ *   S-quality hit → usually MDP rare A (solo S); true MDP S needs support
+ *   A-quality hit → usually MDP rare B
+ *   B-quality hit → soft mid (often still dump/reforge economics)
+ */
+export function buildRareTierJudgementRegexes(
+  baseId: string,
+): TierJudgementRegex[] {
+  const base = TABLET_BASES[baseId];
+  if (!base) return [];
+
+  const pool = [...base.allowedPrefixPool, ...base.allowedSuffixPool];
+  const sMods = pool.filter((id) => modQualityTier(id) === "S");
+  const aMods = pool.filter((id) => modQualityTier(id) === "A");
+  const bMods = pool.filter((id) => modQualityTier(id) === "B");
+
+  return [
+    {
+      tier: "S",
+      regex: regexForModIds(sMods),
+      modIds: sMods,
+      note: aMods.length
+        ? "S-quality. Solo → MDP A ask; true MDP S needs S+A/SS support"
+        : "S-quality. Solo → MDP A (no A-support mods on this base)",
+    },
+    {
+      tier: "A",
+      regex: regexForModIds(aMods),
+      modIds: aMods,
+      note: aMods.length
+        ? "A-quality. Solo → MDP rare B"
+        : "No A-quality mods — use S hits as MDP A",
+    },
+    {
+      tier: "B",
+      regex: regexForModIds(bMods),
+      modIds: bMods,
+      note: "B-quality mid band. No S/A/B match → Trash",
+    },
+  ];
 }

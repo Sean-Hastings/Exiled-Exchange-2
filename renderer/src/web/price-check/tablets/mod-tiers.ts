@@ -59,6 +59,12 @@ const EXPLICIT_TIER_BY_MOD_ID: Record<string, ModQualityTier> = {
   abyss_monster_spawn_t1: "A",
   abyss_monster_spawn_t2: "B",
   abyss_depths_t1: "A",
+
+  // Temple / Vaal — manual trade survey 2026-08-12 (dump≈50, blank≈100).
+  // Crystal ~775ex solo; beacon/chest/eff/pack support showed no combo lift.
+  temple_crystal_t1: "S",
+  temple_beacon_pack_t1: "Junk",
+  temple_chest_rare_t1: "Junk",
 };
 
 export function modQualityTier(modId: string): ModQualityTier {

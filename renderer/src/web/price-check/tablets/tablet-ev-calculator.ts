@@ -1,5 +1,9 @@
-import { TABLET_BASES, TABLET_MOD_WEIGHTS } from "./mod-weights";
+import { TABLET_BASES, modWeightForBase } from "./mod-weights";
 import { modQualityTier, countTier } from "./mod-tiers";
+import {
+  buildRareTierJudgementRegexes,
+  type TierJudgementRegex,
+} from "./tablet-regex-builder";
 import {
   formatSplitStrategy,
   type BlankCraftStrategy,
@@ -7,6 +11,8 @@ import {
 } from "./strat-types";
 import type { ParsedTabletItem, ParsedTabletMod } from "./tablet-types";
 import { dumpFloorEx, JUNK_DUMP_FRACTION } from "./market-sanity";
+import { estimateTabletSellPrice } from "./tablet-sell-estimate";
+import type { TabletSellBasis } from "./tablet-sell-estimate";
 import {
   defaultPolicy,
   expectedUnderDist,
@@ -16,6 +22,7 @@ import {
   solvePolicy,
   type CraftPolicy,
   RARE_TIERS,
+  type RareTier,
 } from "./tablet-mdp";
 
 export { dumpFloorEx, JUNK_DUMP_FRACTION };
@@ -112,6 +119,8 @@ export interface BaseStrategyExplain {
   expectedRollRevenueEx: number;
   blank: StrategyBreakdown[];
   rare: StrategyBreakdown[];
+  /** Stash triage: S/A/B regexes; unmatched → Trash */
+  tierRegexes: TierJudgementRegex[];
 }
 
 export interface TabletEVResult {
@@ -144,6 +153,9 @@ export type TabletAction =
 
 export interface TabletItemEvaluation {
   currentMarketPrice: number;
+  rareTier: RareTier;
+  sellBasis: TabletSellBasis;
+  sellDetail: string;
   action: TabletAction;
   explanation: string;
   baseEV: TabletEVResult;
@@ -445,6 +457,7 @@ export class TabletEVEngine {
         expectedRollRevenueEx: Number.NaN,
         blank: [],
         rare: [],
+        tierRegexes: [],
       };
     }
 
@@ -552,65 +565,56 @@ export class TabletEVEngine {
     }
 
     const rare: StrategyBreakdown[] = [];
-    const trashActs: Array<{
-      action: "Chaos" | "Reforge" | "List" | "Vaal";
-      label: RareDispositionStrategy;
-      note: string;
-    }> = [
-      {
-        action: "Chaos",
-        label: "Chaos-Spam",
-        note: "Chaos until non-trash (linear solve)",
-      },
-      {
-        action: "Reforge",
-        label: "Reforge-3to1",
-        note: "3→1 into fresh rare dist (1/3 share)",
-      },
-      {
-        action: "List",
-        label: "Dump-Sell",
-        note: "List/dump this trash rare as-is",
-      },
-      {
-        action: "Vaal",
-        label: "Vaal-Corrupt",
-        note: "Vaal → corrupt ladder; PoE2 cannot reforge corrupt (list/dump only)",
-      },
-    ];
-    for (const { action, label, note } of trashActs) {
-      const hit = solvePolicy(this.marketCache, baseId, {
-        blank: "Skip-Blanks",
-        rare: { S: "List", A: "List", B: "List", Trash: action },
-        corrupt: { S: "List", A: "List", B: "List", Trash: "Dump" },
-      });
-      if (!hit) continue;
-      const outcomes: OutcomeSlice[] = RARE_TIERS.map((tier) => ({
-        kind: tierKind(tier),
-        label: "P(land " + tier + ") · continuation",
-        prob: hit.sales.alchDist[tier],
-        avgValueEx: hit.rareV[tier],
-        revenueEx: hit.sales.alchDist[tier] * hit.sales.uncorrupted[tier],
-      })).filter((o) => o.prob > 1e-9);
-      const vt = hit.rareV.Trash;
-      rare.push({
-        strategy: label,
-        path: "rare",
-        expectedRevenueEx: hit.sales.uncorrupted.Trash,
-        costEx:
-          action === "Chaos"
-            ? hit.sales.chaosCost
-            : action === "Vaal"
-              ? hit.sales.vaalCost
-              : 0,
-        netEV: vt,
-        outcomes,
-        note:
-          "V(Trash)=" +
-          (Number.isFinite(vt) ? vt.toFixed(1) : "-Inf") +
-          "ex · " +
-          note,
-      });
+    const actionToLabel = (
+      action: "List" | "Chaos" | "Reforge" | "Vaal",
+    ): RareDispositionStrategy => {
+      if (action === "Chaos") return "Chaos-Spam";
+      if (action === "Reforge") return "Reforge-3to1";
+      if (action === "Vaal") return "Vaal-Corrupt";
+      return "Dump-Sell";
+    };
+    if (recommended) {
+      for (const tier of RARE_TIERS) {
+        const best = recommended.policy.rare[tier];
+        const list = recommended.sales.uncorrupted[tier];
+        const marg = recommended.marginalVsList[tier];
+        const outcomes: OutcomeSlice[] = (
+          ["List", "Chaos", "Reforge", "Vaal"] as const
+        ).map((action) => {
+          const m = recommended.actionMarginals[tier][action];
+          return {
+            kind:
+              action === best
+                ? tierKind(tier)
+                : ("trash" as OutcomeKind),
+            label:
+              action +
+              (action === best ? " ★" : "") +
+              " · Δ" +
+              (Number.isFinite(m)
+                ? (m >= 0 ? "+" : "") + m.toFixed(0)
+                : "n/a"),
+            prob: action === best ? 1 : 0,
+            avgValueEx: Number.isFinite(m) ? m : Number.NaN,
+            revenueEx: Number.isFinite(m) ? m : Number.NaN,
+          };
+        });
+        rare.push({
+          strategy: `${tier}:${actionToLabel(best)}`,
+          path: "rare",
+          expectedRevenueEx: list,
+          costEx: 0,
+          netEV: marg,
+          outcomes,
+          note:
+            `${tier} sell-as-is ${Number.isFinite(list) ? list.toFixed(0) : "n/a"}ex` +
+            ` · best ${best}` +
+            ` · marginal vs sell ${Number.isFinite(marg) ? ((marg >= 0 ? "+" : "") + marg.toFixed(1)) : "n/a"}ex` +
+            (tier === "Trash"
+              ? " · reforge=⅓ fresh (residual <3 sell at their tier asks)"
+              : ""),
+        });
+      }
     }
 
     return {
@@ -623,6 +627,7 @@ export class TabletEVEngine {
       expectedRollRevenueEx,
       blank,
       rare,
+      tierRegexes: buildRareTierJudgementRegexes(baseId),
     };
   }
 
@@ -644,11 +649,11 @@ export class TabletEVEngine {
         : Number.POSITIVE_INFINITY;
 
     const totalPrefixWeight = base.allowedPrefixPool.reduce(
-      (sum, id) => sum + (TABLET_MOD_WEIGHTS[id]?.weight ?? 0),
+      (sum, id) => sum + (modWeightForBase(baseId, id)),
       0,
     );
     const totalSuffixWeight = base.allowedSuffixPool.reduce(
-      (sum, id) => sum + (TABLET_MOD_WEIGHTS[id]?.weight ?? 0),
+      (sum, id) => sum + (modWeightForBase(baseId, id)),
       0,
     );
 
@@ -663,11 +668,11 @@ export class TabletEVEngine {
 
     if (totalPrefixWeight > 0 && totalSuffixWeight > 0) {
       for (const pId of base.allowedPrefixPool) {
-        const pWeight = TABLET_MOD_WEIGHTS[pId]?.weight ?? 0;
+        const pWeight = modWeightForBase(baseId, pId);
         if (pWeight <= 0) continue;
         const pProb = pWeight / totalPrefixWeight;
         for (const sId of base.allowedSuffixPool) {
-          const sWeight = TABLET_MOD_WEIGHTS[sId]?.weight ?? 0;
+          const sWeight = modWeightForBase(baseId, sId);
           if (sWeight <= 0) continue;
           const comboProb = pProb * (sWeight / totalSuffixWeight);
           const measuredSale = estimateComboValue(
@@ -739,7 +744,7 @@ export class TabletEVEngine {
     const alch = measured(c.alchemy);
     const a = anchors(this.marketCache);
     const totalW = pool.reduce(
-      (s, id) => s + (TABLET_MOD_WEIGHTS[id]?.weight ?? 0),
+      (s, id) => s + (modWeightForBase(baseId, id)),
       0,
     );
     if (
@@ -759,7 +764,7 @@ export class TabletEVEngine {
     const weightOf = (tier: ReturnType<typeof modQualityTier>) =>
       pool.reduce((s, id) => {
         if (modQualityTier(id) !== tier) return s;
-        return s + (TABLET_MOD_WEIGHTS[id]?.weight ?? 0);
+        return s + (modWeightForBase(baseId, id));
       }, 0);
 
     const pS = weightOf("S") / totalW;
@@ -846,47 +851,58 @@ export class TabletEVEngine {
     parsedTablet: ParsedTabletItem,
   ): TabletItemEvaluation {
     const baseEV = this.calculateBaseEV(parsedTablet.tabletBaseKey);
-    const currentPrice = this.lookupCurrentModPrice(parsedTablet.parsedMods);
+    const sell = estimateTabletSellPrice(parsedTablet, this.marketCache);
+    const currentPrice = sell.sellEx;
     const rareStrategy = baseEV.rareStrategy;
     const modIds = parsedTablet.parsedMods.map((m) => m.id);
     const sCount = countTier(modIds, "S");
     const aCount = countTier(modIds, "A");
     const fmt = (n: number) =>
       Number.isFinite(n) ? n.toFixed(2) : "NaN";
+    const tierTag = `tier ${sell.rareTier}`;
+    const priceTag = `${fmt(currentPrice)}ex (${sell.detail})`;
+
+    const pack = (
+      partial: Omit<
+        TabletItemEvaluation,
+        "currentMarketPrice" | "rareTier" | "sellBasis" | "sellDetail" | "baseEV"
+      >,
+    ): TabletItemEvaluation => ({
+      ...partial,
+      currentMarketPrice: currentPrice,
+      rareTier: sell.rareTier,
+      sellBasis: sell.basis,
+      sellDetail: sell.detail,
+      baseEV,
+    });
 
     if (parsedTablet.isCorrupted) {
-      return {
-        currentMarketPrice: currentPrice,
+      return pack({
         action: "SELL_AS_IS",
-        explanation: `Corrupted — list as-is (~${fmt(currentPrice)}ex).`,
-        baseEV,
+        explanation: `Corrupted ${tierTag} — list as-is ~${priceTag}.`,
         rareStrategy: "Dump-Sell",
-      };
+      });
     }
 
     if (sCount >= 2 || (sCount >= 1 && aCount >= 1)) {
-      return {
-        currentMarketPrice: currentPrice,
+      return pack({
         action: "SELL_AS_IS",
-        explanation: `S/A synergy. List premium (~${fmt(currentPrice)}ex measured). (Blanks: ${baseEV.blankStrategy})`,
-        baseEV,
+        explanation: `S/A synergy (${tierTag}). List ~${priceTag}. (Blanks: ${baseEV.blankStrategy})`,
         rareStrategy: "Merchant-List",
-      };
+      });
     }
 
     if (sCount >= 1 || aCount >= 2) {
-      return {
-        currentMarketPrice: currentPrice,
+      return pack({
         action: "MERCHANT",
-        explanation: `Solid mid roll — merchant if measured (~${fmt(currentPrice)}ex). Rare path default is ${rareStrategy}.`,
-        baseEV,
+        explanation: `Solid mid (${tierTag}) — list ~${priceTag}. Rare path default is ${rareStrategy}.`,
         rareStrategy: "Merchant-List",
-      };
+      });
     }
 
-    // Junk / under-rolled: follow rare disposition (independent of blank craft)
     const junkThreshold =
-      Number.isFinite(baseEV.expectedGrossValue) || Number.isFinite(baseEV.baseCost)
+      Number.isFinite(baseEV.expectedGrossValue) ||
+      Number.isFinite(baseEV.baseCost)
         ? Math.max(
             Number.isFinite(baseEV.expectedGrossValue)
               ? baseEV.expectedGrossValue * 0.5
@@ -900,32 +916,26 @@ export class TabletEVEngine {
       currentPrice <= junkThreshold
     ) {
       const action = actionForRareStrategy(rareStrategy);
-      return {
-        currentMarketPrice: currentPrice,
+      return pack({
         action,
-        explanation: `Junk/under-roll (~${fmt(currentPrice)}ex). Use rare path ${rareStrategy} (${fmt(baseEV.rareNetEV)}ex/attempt). Blanks stay on ${baseEV.blankStrategy}.`,
-        baseEV,
+        explanation: `Junk/under-roll (${tierTag} ~${priceTag}). Rare→${rareStrategy} (${fmt(baseEV.rareNetEV)}ex/attempt). Blanks→${baseEV.blankStrategy}.`,
         rareStrategy,
-      };
+      });
     }
 
     if (rareStrategy === "Exalt-Slam" && parsedTablet.parsedMods.length < 4) {
-      return {
-        currentMarketPrice: currentPrice,
+      return pack({
         action: "EXALT",
-        explanation: `Mid roll with room to slam. Exalt preferred; blanks still ${baseEV.blankStrategy}.`,
-        baseEV,
+        explanation: `Mid roll with room to slam (${tierTag} ~${priceTag}). Exalt preferred; blanks still ${baseEV.blankStrategy}.`,
         rareStrategy: "Exalt-Slam",
-      };
+      });
     }
 
-    return {
-      currentMarketPrice: currentPrice,
+    return pack({
       action: actionForRareStrategy(rareStrategy),
-      explanation: `Moderate (~${fmt(currentPrice)}ex). Rare→${rareStrategy}; Blank→${baseEV.blankStrategy}.`,
-      baseEV,
+      explanation: `${tierTag} ~${priceTag}. Rare→${rareStrategy}; Blank→${baseEV.blankStrategy}.`,
       rareStrategy,
-    };
+    });
   }
 
   public simulateCrafts(
@@ -970,11 +980,11 @@ export class TabletEVEngine {
     const baseCost = measured(this.marketCache.basePrices[baseId]);
     const dump = dumpFloorEx(this.marketCache, baseId, baseCost);
     const totalPrefixWeight = base.allowedPrefixPool.reduce(
-      (sum, id) => sum + (TABLET_MOD_WEIGHTS[id]?.weight ?? 0),
+      (sum, id) => sum + (modWeightForBase(baseId, id)),
       0,
     );
     const totalSuffixWeight = base.allowedSuffixPool.reduce(
-      (sum, id) => sum + (TABLET_MOD_WEIGHTS[id]?.weight ?? 0),
+      (sum, id) => sum + (modWeightForBase(baseId, id)),
       0,
     );
 
@@ -984,11 +994,11 @@ export class TabletEVEngine {
 
     if (totalPrefixWeight > 0 && totalSuffixWeight > 0) {
       for (const pId of base.allowedPrefixPool) {
-        const pWeight = TABLET_MOD_WEIGHTS[pId]?.weight ?? 0;
+        const pWeight = modWeightForBase(baseId, pId);
         if (pWeight <= 0) continue;
         const pProb = pWeight / totalPrefixWeight;
         for (const sId of base.allowedSuffixPool) {
-          const sWeight = TABLET_MOD_WEIGHTS[sId]?.weight ?? 0;
+          const sWeight = modWeightForBase(baseId, sId);
           if (sWeight <= 0) continue;
           const comboProb = pProb * (sWeight / totalSuffixWeight);
           const measuredSale = estimateComboValue(
@@ -1088,7 +1098,7 @@ export class TabletEVEngine {
     empiricalComboEV: number,
   ): PathEV & { strategy: BlankCraftStrategy } {
     const totalW = pool.reduce(
-      (s, id) => s + (TABLET_MOD_WEIGHTS[id]?.weight ?? 0),
+      (s, id) => s + (modWeightForBase(baseId, id)),
       0,
     );
     const setup = transmute + aug;
@@ -1105,7 +1115,7 @@ export class TabletEVEngine {
     const weightOf = (tier: ReturnType<typeof modQualityTier>) =>
       pool.reduce((s, id) => {
         if (modQualityTier(id) !== tier) return s;
-        return s + (TABLET_MOD_WEIGHTS[id]?.weight ?? 0);
+        return s + (modWeightForBase(baseId, id));
       }, 0);
 
     const pS = weightOf("S") / totalW;

@@ -238,9 +238,24 @@ export const TABLET_BASES: Record<string, TabletBaseDefinition> = {
         "temple_beacon_pack_t1",
         "temple_crystal_t1",
         "temple_chest_rare_t1",
+        "temple_unique_monster_t1",
       ],
     ),
     maxAffixes: 4,
+    /**
+     * Fitted 2026-08-12 from three crystal observations (suffix share):
+     *   alch n=27 presence 4/27 → x=1−√(1−P) ≈ 0.077 → wc≈2740
+     *   magic/T+A n=28 presence 1/28 → x≈0.036 → wc≈1220
+     *   chaos one-affix ~1/32.5 → wc≈1770 (inverts P≈½·wc/(W−w_keep))
+     * Precision-weighted blend → wc≈2210 (was 2575 alch-only).
+     */
+    weightOverrides: {
+      temple_crystal_t1: 2210,
+      temple_beacon_pack_t1: 11140,
+      temple_chest_rare_t1: 4660,
+      map_pack_size_t2: 5480,
+      junk_monster_eff_t1: 3840,
+    },
   },
 };
 
@@ -992,7 +1007,7 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
     maxValue: 10,
     isPrefix: false,
     category: "Temple",
-    valueScore: 32,
+    valueScore: 95,
     regexHint: "cryst",
   },
   temple_chest_rare_t1: {
@@ -1009,6 +1024,21 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
     category: "Temple",
     valueScore: 26,
     regexHint: "chest",
+  },
+  /** Seen on regal+ex sample; exact wording may need clipboard confirmation. */
+  temple_unique_monster_t1: {
+    id: "temple_unique_monster_t1",
+    name: "Vaal Beacons in Map are guarded by a Unique Monster",
+    statPattern: /Vaal Beacons?.*(?:Unique Monster|unique monster)/i,
+    tradeStatId: "explicit.stat_temple_unique_monster_unknown",
+    tier: 1,
+    weight: 2000,
+    minValue: 1,
+    maxValue: 1,
+    isPrefix: false,
+    category: "Temple",
+    valueScore: 22,
+    regexHint: "unique",
   },
 
   // Shared generic junk (0.3.1 pool flood) — high weight, low score
@@ -1321,6 +1351,15 @@ export function findTabletBaseByName(name: string): TabletBaseDefinition | null 
     }
   }
   return null;
+}
+
+/** Affix weight for EV rolls — honors per-base empirical overrides. */
+export function modWeightForBase(baseId: string, modId: string): number {
+  const override = TABLET_BASES[baseId]?.weightOverrides?.[modId];
+  if (override != null && Number.isFinite(override) && override > 0) {
+    return override;
+  }
+  return TABLET_MOD_WEIGHTS[modId]?.weight ?? 0;
 }
 
 export function getHighValueModsForBase(

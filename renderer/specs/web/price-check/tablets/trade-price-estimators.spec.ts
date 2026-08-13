@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   BUY_DEPTH_N,
+  buyDepthForRegime,
+  classifyMarketFlow,
   estimateBuyPriceEx,
   estimateSellPriceEx,
   filterBuyListings,
@@ -122,10 +124,10 @@ describe("trade-price-estimators", () => {
     expect(estimateBuyPriceEx(listings, 25)).toBe(80);
   });
 
-  it("sell undercuts live floor when fresh asks exist", () => {
+  it("sell undercuts pack below cheapest ≥24h stale anchor", () => {
     const now = Date.parse("2026-08-11T12:00:00.000Z");
     const dayMs = 24 * 60 * 60 * 1000;
-    // Fresh floor 100; stale 200 is far above → don't ride the ghost
+    // Fresh pack under stale ghost: undercut highest ask strictly below anchor
     const price = estimateSellPriceEx(
       [
         { priceEx: 100, indexedAt: new Date(now - hour(1)).toISOString() },
@@ -137,10 +139,11 @@ describe("trade-price-estimators", () => {
       ],
       { nowMs: now },
     );
-    expect(price).toBe(95);
+    // thin book (<6) → 10% under pack leader 100
+    expect(price).toBe(90);
   });
 
-  it("sell uses near-floor stale clearing price when present", () => {
+  it("sell undercuts pack under near-floor stale (not ride the stale ask)", () => {
     const now = Date.parse("2026-08-11T12:00:00.000Z");
     const dayMs = 24 * 60 * 60 * 1000;
     const price = estimateSellPriceEx(
@@ -153,7 +156,7 @@ describe("trade-price-estimators", () => {
       ],
       { nowMs: now },
     );
-    expect(price).toBe(110);
+    expect(price).toBe(90);
   });
 
   it("sell undercuts live floor when no stale listings", () => {
@@ -165,7 +168,7 @@ describe("trade-price-estimators", () => {
       ],
       { nowMs: now },
     );
-    expect(price).toBe(95);
+    expect(price).toBe(90);
   });
 
   it("sell ignores ancient ghosts beyond max stale age", () => {
@@ -181,17 +184,35 @@ describe("trade-price-estimators", () => {
       ],
       { nowMs: now },
     );
-    expect(price).toBe(114); // live floor × 0.95
+    expect(price).toBe(108); // live floor × 0.9 (thin)
   });
 
-  it("deep all-stale book uses cheapest recently-stale ask", () => {
+  it("deep all-stale book undercuts cheapest recently-stale ask", () => {
     const now = Date.parse("2026-08-11T12:00:00.000Z");
     const dayMs = 24 * 60 * 60 * 1000;
     const listings = Array.from({ length: 8 }, (_, i) => ({
       priceEx: 200 + i * 10,
       indexedAt: new Date(now - dayMs * 2 - hour(i)).toISOString(),
     }));
-    expect(estimateSellPriceEx(listings, { nowMs: now })).toBe(200);
+    // nothing below anchor → shave anchor at 4%
+    expect(estimateSellPriceEx(listings, { nowMs: now })).toBe(192);
+  });
+
+  it("classifyMarketFlow detects refill as hot", () => {
+    const first = Array.from({ length: 12 }, (_, i) => ({
+      priceEx: 80 + i,
+      currency: "exalted",
+      indexedAt: "2026-08-11T10:00:00.000Z",
+    }));
+    const second = [
+      ...first,
+      { priceEx: 79, currency: "exalted", indexedAt: "2026-08-11T10:01:00.000Z" },
+      { priceEx: 78, currency: "exalted", indexedAt: "2026-08-11T10:01:05.000Z" },
+    ];
+    expect(classifyMarketFlow(first, second)).toBe("hot");
+    expect(classifyMarketFlow(first, first)).toBe("cold");
+    expect(buyDepthForRegime("hot", 40)).toBe(10);
+    expect(buyDepthForRegime("cold", 40)).toBe(40);
   });
 
   it("returns null on empty books", () => {

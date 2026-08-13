@@ -6,6 +6,7 @@ import {
   buildTierSaleTable,
   defaultPolicy,
   recommendPolicy,
+  solveOptimalRarePolicy,
   solvePolicy,
   solveRareValues,
 } from "@/web/price-check/tablets/tablet-mdp";
@@ -50,18 +51,59 @@ describe("tablet-mdp", () => {
     // With junk-heavy pools, chaos-until-hit may still lose to dump — only require finite solve
   });
 
-  it("chaos with P(Trash)=1 is singular → −∞", () => {
+  it("chaos with P(stay Trash)=1 is singular → −∞", () => {
     const market = measuredFixture();
     const sales = buildTierSaleTable(market, "breach_tablet")!;
-    sales.alchDist = { S: 0, A: 0, B: 0, Trash: 1 };
+    sales.chaosFrom = {
+      S: { S: 1, A: 0, B: 0, Trash: 0 },
+      A: { S: 0, A: 1, B: 0, Trash: 0 },
+      B: { S: 0, A: 0, B: 1, Trash: 0 },
+      Trash: { S: 0, A: 0, B: 0, Trash: 1 },
+    };
     const { rareV, note } = solveRareValues(sales, defaultPolicy());
     expect(note).toMatch(/Singular|−∞|Inf/i);
     expect(rareV.Trash).toBe(Number.NEGATIVE_INFINITY);
   });
 
-  it("recommendPolicy returns a finite Skip or craft EV", () => {
-    const hit = recommendPolicy(measuredFixture(), "breach_tablet");
+  it("one-affix chaos from Trash differs from a full alch redraw", () => {
+    const sales = buildTierSaleTable(measuredFixture(), "temple_tablet")!;
+    const row = sales.chaosFrom.Trash;
+    const rowSum = Object.values(row).reduce((a, b) => a + b, 0);
+    expect(rowSum).toBeCloseTo(1, 5);
+    // Must not treat chaos as an independent full rare redraw
+    const redrawL1 =
+      Math.abs(row.S - sales.alchDist.S) +
+      Math.abs(row.A - sales.alchDist.A) +
+      Math.abs(row.B - sales.alchDist.B) +
+      Math.abs(row.Trash - sales.alchDist.Trash);
+    expect(redrawL1).toBeGreaterThan(0.05);
+    // One-slot replace: landing a single S mod is A-tier (solo S), not jackpot S
+    expect(row.S).toBeLessThanOrEqual(sales.alchDist.S + 1e-12);
+  });
+
+  it("optimal rare policy exposes marginal vs list (dump/sell = 0)", () => {
+    const market = measuredFixture();
+    market.currencyCosts.chaos = 45;
+    market.junkSellByBase = { temple_tablet: 60 };
+    const sales = buildTierSaleTable(market, "temple_tablet")!;
+    const opt = solveOptimalRarePolicy(sales);
+    expect(opt.actionMarginals.Trash.List).toBeCloseTo(0, 5);
+    // List is never worse than itself
+    for (const t of ["S", "A", "B", "Trash"] as const) {
+      expect(opt.actionMarginals[t].List).toBeCloseTo(0, 5);
+    }
+    // Reroll-worthy iff best action ≠ List
+    for (const t of opt.rerollWorthy) {
+      expect(opt.rare[t]).not.toBe("List");
+      expect(opt.marginalVsList[t]).toBeGreaterThan(0);
+    }
+  });
+
+  it("recommendPolicy uses optimal per-tier rare actions", () => {
+    const hit = recommendPolicy(measuredFixture(), "temple_tablet");
     expect(hit).toBeTruthy();
+    expect(hit!.marginalVsList).toBeTruthy();
+    expect(hit!.actionMarginals.Trash.List).toBeCloseTo(0, 5);
     expect(Number.isFinite(hit!.whiteEV)).toBe(true);
   });
 

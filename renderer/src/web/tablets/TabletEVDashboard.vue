@@ -15,7 +15,7 @@
         </div>
       </div>
 
-      <div class="flex flex-wrap gap-1">
+      <div class="flex flex-wrap gap-1 items-center">
         <button
           type="button"
           class="btn text-xs"
@@ -39,6 +39,22 @@
                 : "Refresh Selected"
           }}
         </button>
+        <label
+          class="flex items-center gap-1 text-xs text-gray-400 px-1"
+          title="Cold-market buy depth (patience). Hot books still use ~10 after the flow probe."
+        >
+          Cold buy@
+          <input
+            type="number"
+            min="5"
+            max="50"
+            step="1"
+            class="w-12 bg-gray-900 border border-gray-700 rounded px-1 py-0.5 text-gray-100"
+            :value="coldBuyDepth"
+            :disabled="isRefreshing"
+            @change="onColdBuyDepthInput"
+          />
+        </label>
         <button type="button" class="btn text-xs" @click="copySelectedRegex">
           Copy Stash Regex
         </button>
@@ -49,7 +65,7 @@
           type="button"
           class="btn text-xs"
           :class="{ 'ring-1 ring-amber-400': showManualSurvey }"
-          :title="'In-game manual: stash regex + your sell price (~17 steps)'"
+          :title="'In-game manual Temple survey: trade filters + your sell price'"
           @click="showManualSurvey = !showManualSurvey"
         >
           {{ showManualSurvey ? "Hide Manual Survey" : "Manual Tier Survey" }}
@@ -187,6 +203,38 @@
                 </tr>
               </tbody>
             </table>
+            <div class="text-sky-200/90 mb-1 mt-2">
+              Stash triage regex (S→A→B; no match → Trash)
+            </div>
+            <div
+              v-for="tr in selectedExplain.tierRegexes"
+              :key="'rx-' + tr.tier"
+              class="border border-gray-800 rounded mb-1 px-2 py-1 flex flex-wrap items-center gap-x-2 gap-y-1"
+            >
+              <span
+                class="font-semibold w-4"
+                :class="{
+                  'text-amber-200': tr.tier === 'S',
+                  'text-sky-200': tr.tier === 'A',
+                  'text-gray-200': tr.tier === 'B',
+                }"
+              >{{ tr.tier }}</span>
+              <code class="text-green-300/90 break-all flex-1 min-w-0">{{
+                stripRegexQuotes(tr.regex)
+              }}</code>
+              <button
+                type="button"
+                class="btn text-xs shrink-0"
+                :disabled="!tr.modIds.length"
+                :title="tr.note"
+                @click="copyTierRegex(tr.regex)"
+              >
+                Copy
+              </button>
+              <span class="text-gray-500 w-full text-[10px] leading-tight">{{
+                tr.note
+              }}</span>
+            </div>
           </div>
 
           <div>
@@ -226,19 +274,22 @@
           </div>
 
           <div>
-            <div class="text-amber-200 mb-1">From trash rare</div>
+            <div class="text-amber-200 mb-1">
+              Per rare tier (EV = marginal vs sell-as-is at that tier = 0)
+            </div>
             <div
               v-for="s in selectedExplain.rare"
               :key="'r-' + s.strategy"
               class="border border-gray-800 rounded mb-1"
             >
               <div class="px-2 py-1 bg-gray-900 flex flex-wrap gap-x-2">
-                <span class="text-amber-300">{{ rareLabel(s.strategy as any) }}</span>
+                <span class="text-amber-300">{{ s.strategy }}</span>
                 <span>
-                  rev <b class="text-white">{{ fmtEx(s.expectedRevenueEx) }}</b>
-                  · cost {{ fmtEx(s.costEx) }} · EV
+                  list
+                  <b class="text-white">{{ fmtEx(s.expectedRevenueEx) }}</b>
+                  · ΔEV
                   <span :class="s.netEV > 0 ? 'text-green-300' : 'text-red-300'">
-                    {{ fmtEx(s.netEV) }}
+                    {{ s.netEV > 0 ? "+" : "" }}{{ fmtEx(s.netEV) }}
                   </span>
                 </span>
                 <span v-if="s.note" class="text-gray-500 w-full">{{ s.note }}</span>
@@ -252,9 +303,7 @@
                     :class="outcomeClass(o.kind)"
                   >
                     <td class="px-2 py-0.5">{{ o.label }}</td>
-                    <td class="px-1 text-right w-14">{{ pct(o.prob) }}</td>
                     <td class="px-1 text-right w-16">{{ fmtEx(o.avgValueEx, 0) }}</td>
-                    <td class="px-1 text-right w-16">{{ fmtEx(o.revenueEx, 1) }}</td>
                   </tr>
                 </tbody>
               </table>
@@ -465,7 +514,9 @@ import {
   ensureTabletMarketSynced,
   getHighValueModsForBase,
   RARE_STRATEGY_LABELS,
+  setTabletColdBuyDepth,
   summarizeMarketForUi,
+  tabletColdBuyDepth,
   tabletMarketCache,
   tabletMarketDebug,
   tabletMarketStatus,
@@ -497,6 +548,7 @@ if (props.config.wmFlags[0] === "uninitialized") {
 const isRefreshing = ref(false);
 /** Short name shown while a single-base refresh is in flight */
 const refreshScope = ref<string | null>(null);
+const coldBuyDepth = tabletColdBuyDepth;
 const showDebug = ref(false);
 const showManualSurvey = ref(false);
 const expandedSearch = ref<number | null>(0);
@@ -601,6 +653,11 @@ function shortBaseName(name: string) {
   return name.replace(/\s*Tablet\s*$/i, "") || name;
 }
 
+function onColdBuyDepthInput(ev: Event) {
+  const el = ev.target as HTMLInputElement;
+  setTabletColdBuyDepth(Number(el.value));
+}
+
 async function refresh() {
   if (isRefreshing.value) return;
   isRefreshing.value = true;
@@ -626,6 +683,19 @@ async function refreshSelected() {
     isRefreshing.value = false;
     refreshScope.value = null;
   }
+}
+
+function stripRegexQuotes(regex: string): string {
+  return regex.replace(/^"|"$/g, "");
+}
+
+function copyTierRegex(regex: string) {
+  const text = stripRegexQuotes(regex);
+  if (!text) return;
+  MainProcess.sendEvent({
+    name: "CLIENT->MAIN::user-action",
+    payload: { action: "stash-search", text: `"${text}"` },
+  });
 }
 
 function selectedRegex(): string {

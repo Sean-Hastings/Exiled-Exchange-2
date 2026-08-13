@@ -3,9 +3,18 @@
  *
  * Infinite-horizon actions (chaos-until-hit, reforge loops) are solved as a
  * linear system — never by unbounded simulation.
+ *
+ * Chaos = PoE2 one-affix replace (random slot → new mod from that side's
+ * pool). Reforge still uses a full alchemy-style 2p+2s redraw.
  */
-import { TABLET_BASES, TABLET_MOD_WEIGHTS } from "./mod-weights";
-import { classifyModCombo, modQualityTier } from "./mod-tiers";
+import { TABLET_BASES, modWeightForBase } from "./mod-weights";
+import {
+  SIDE_SCORE,
+  classifyModCombo,
+  comboScoreToRareTier,
+  modQualityTier,
+  type SidePattern,
+} from "./mod-tiers";
 import type { ModQualityTier } from "./strat-types";
 import type {
   BlankCraftStrategy,
@@ -41,6 +50,11 @@ export interface TierSaleTable {
   /** P(tier) from magic-pipeline → rare */
   magicDist: Record<RareTier, number>;
   /**
+   * One-affix chaos: P(to | from). Averaged over weighted 2p+2s configs in
+   * `from`, then uniform slot pick + weighted replacement on that side.
+   */
+  chaosFrom: Record<RareTier, Record<RareTier, number>>;
+  /**
    * Fraction of 1p×1s pair mass with a live combo sync (diagnostic only).
    * Not used to blend tier sale prices — junk mass is already in alchDist.
    */
@@ -51,6 +65,10 @@ export interface TierSaleTable {
   chaosCost: number;
   vaalCost: number;
   baseCost: number;
+  /**
+   * Junk-tier calibration floor when Trash has no measured asks (seed only).
+   * Sell-as-is for any tier uses uncorrupted/corrupted[tier], never this alone.
+   */
   dumpFloor: number;
 }
 
@@ -68,10 +86,79 @@ export interface MdpSolveResult {
   /** Continuation value of each rare tier (post-craft, before/at decision) */
   rareV: Record<RareTier, number>;
   corruptV: Record<RareTier, number>;
+  /**
+   * rareV[t] − immediate sell-as-is at tier t (uncorrupted[t]). That baseline
+   * is 0 in the UI; positive = worth rerolling vs listing that tier's ask.
+   * Not a global junk-dump constant — B uses B's sale, Trash uses Trash's, etc.
+   */
+  marginalVsList: Record<RareTier, number>;
+  /** Per-tier one-step marginal for each action (vs sell-as-is), under optimal V. */
+  actionMarginals: Record<RareTier, Record<RareAction, number>>;
+  /** Tiers where optimal action ≠ List (reroll-worthy mass). */
+  rerollWorthy: RareTier[];
   sales: TierSaleTable;
   /** Blank transition revenue pieces */
   blankOutcomes: TierSlice[];
   note?: string;
+}
+
+export const RARE_ACTIONS: RareAction[] = ["List", "Chaos", "Reforge", "Vaal"];
+
+/**
+ * Immediate sell-as-is proceeds for a rare tier (that tier's list/ask).
+ * Never substitutes a global dump floor for a better-tier sale.
+ */
+export function listSaleEx(sales: TierSaleTable, tier: RareTier): number {
+  return sales.uncorrupted[tier];
+}
+
+/** Corrupted sell-as-is at this tier (corrupt ask) — not junk-floor clamped. */
+export function corruptSaleEx(sales: TierSaleTable, tier: RareTier): number {
+  return sales.corrupted[tier];
+}
+
+/**
+ * One-step action value using continuation V for next rare/corrupt states.
+ * Reforge uses the asymptotic 3→1 share (dump residual &lt;3 in a finite batch).
+ */
+export function qRareAction(
+  sales: TierSaleTable,
+  tier: RareTier,
+  action: RareAction,
+  rareV: Record<RareTier, number>,
+  corruptV: Record<RareTier, number>,
+): number {
+  if (action === "List") return listSaleEx(sales, tier);
+  if (action === "Chaos") {
+    let s = -sales.chaosCost;
+    const dist = sales.chaosFrom[tier];
+    for (const t2 of RARE_TIERS) {
+      const v = rareV[t2];
+      if (!Number.isFinite(v) && dist[t2] > 0) return v;
+      s += dist[t2] * (Number.isFinite(v) ? v : 0);
+    }
+    return s;
+  }
+  if (action === "Reforge") {
+    let s = 0;
+    for (const t2 of RARE_TIERS) {
+      const v = rareV[t2];
+      if (!Number.isFinite(v) && sales.alchDist[t2] > 0) return v;
+      s += sales.alchDist[t2] * (Number.isFinite(v) ? v : 0);
+    }
+    return s / 3;
+  }
+  const cv = corruptV[tier];
+  if (!Number.isFinite(cv)) return cv;
+  return -sales.vaalCost + cv;
+}
+
+function defaultCorruptPolicy(): CraftPolicy["corrupt"] {
+  return { S: "List", A: "List", B: "List", Trash: "Dump" };
+}
+
+function emptyActionMarginals(): Record<RareAction, number> {
+  return { List: 0, Chaos: Number.NaN, Reforge: Number.NaN, Vaal: Number.NaN };
 }
 
 function measured(n: number | undefined | null): number {
@@ -97,8 +184,109 @@ export function modsToRareTier(modIds: string[]): RareTier {
 }
 
 /**
+ * Policy iteration over rare actions (all tiers). List/dump is always an
+ * option; Chaos/Reforge/Vaal win a tier only when their Q beats list sale.
+ */
+export function solveOptimalRarePolicy(sales: TierSaleTable): {
+  rare: CraftPolicy["rare"];
+  corrupt: CraftPolicy["corrupt"];
+  rareV: Record<RareTier, number>;
+  corruptV: Record<RareTier, number>;
+  marginalVsList: Record<RareTier, number>;
+  actionMarginals: Record<RareTier, Record<RareAction, number>>;
+  rerollWorthy: RareTier[];
+  note?: string;
+} {
+  const corrupt = defaultCorruptPolicy();
+  let rare: CraftPolicy["rare"] = {
+    S: "List",
+    A: "List",
+    B: "List",
+    Trash: "List",
+  };
+
+  let rareV = emptyDist() as Record<RareTier, number>;
+  let corruptV = emptyDist() as Record<RareTier, number>;
+  let note: string | undefined;
+
+  for (let iter = 0; iter < 24; iter++) {
+    const solved = solveRareValues(sales, {
+      blank: "Skip-Blanks",
+      rare,
+      corrupt,
+    });
+    rareV = solved.rareV;
+    corruptV = solved.corruptV;
+    note = solved.note;
+
+    let changed = false;
+    const next = { ...rare };
+    for (const tier of RARE_TIERS) {
+      let best: RareAction = "List";
+      let bestQ = qRareAction(sales, tier, "List", rareV, corruptV);
+      for (const action of RARE_ACTIONS) {
+        if (action === "List") continue;
+        const q = qRareAction(sales, tier, action, rareV, corruptV);
+        if (Number.isFinite(q) && (!Number.isFinite(bestQ) || q > bestQ + 1e-9)) {
+          bestQ = q;
+          best = action;
+        }
+      }
+      if (next[tier] !== best) {
+        next[tier] = best;
+        changed = true;
+      }
+    }
+    rare = next;
+    if (!changed) break;
+  }
+
+  const final = solveRareValues(sales, {
+    blank: "Skip-Blanks",
+    rare,
+    corrupt,
+  });
+  rareV = final.rareV;
+  corruptV = final.corruptV;
+  note = final.note ?? note;
+
+  const marginalVsList = emptyDist() as Record<RareTier, number>;
+  const actionMarginals = {
+    S: emptyActionMarginals(),
+    A: emptyActionMarginals(),
+    B: emptyActionMarginals(),
+    Trash: emptyActionMarginals(),
+  } as Record<RareTier, Record<RareAction, number>>;
+  const rerollWorthy: RareTier[] = [];
+
+  for (const tier of RARE_TIERS) {
+    const list = listSaleEx(sales, tier);
+    const v = rareV[tier];
+    marginalVsList[tier] =
+      Number.isFinite(v) && Number.isFinite(list) ? v - list : v;
+    for (const action of RARE_ACTIONS) {
+      const q = qRareAction(sales, tier, action, rareV, corruptV);
+      actionMarginals[tier][action] =
+        Number.isFinite(q) && Number.isFinite(list) ? q - list : q;
+    }
+    if (rare[tier] !== "List") rerollWorthy.push(tier);
+  }
+
+  return {
+    rare,
+    corrupt,
+    rareV,
+    corruptV,
+    marginalVsList,
+    actionMarginals,
+    rerollWorthy,
+    note,
+  };
+}
+
+/**
  * Default "sensible" policy: list S/A/B, chaos trash (until hit), list corrupt.
- * Reforge/Vaal are available for search, not default.
+ * Prefer {@link solveOptimalRarePolicy} for recommendations.
  */
 export function defaultPolicy(blank: BlankCraftStrategy = "Scour-Alch"): CraftPolicy {
   return {
@@ -109,53 +297,27 @@ export function defaultPolicy(blank: BlankCraftStrategy = "Scour-Alch"): CraftPo
       B: "List",
       Trash: "Chaos",
     },
-    corrupt: {
-      S: "List",
-      A: "List",
-      B: "List",
-      Trash: "Dump",
-    },
+    corrupt: defaultCorruptPolicy(),
   };
 }
 
-/** Policies we score to pick a recommendation. */
+/** Blank strategies to score once rare actions are optimized per tier. */
+export function candidateBlankStrategies(): BlankCraftStrategy[] {
+  return ["Skip-Blanks", "Scour-Alch", "Magic-Pipeline"];
+}
+
+/** @deprecated Prefer solveOptimalRarePolicy + candidateBlankStrategies */
 export function candidatePolicies(): CraftPolicy[] {
-  const blanks: BlankCraftStrategy[] = [
-    "Skip-Blanks",
-    "Scour-Alch",
-    "Magic-Pipeline",
-  ];
-  const trashActions: RareAction[] = ["Chaos", "Reforge", "List", "Vaal"];
   const out: CraftPolicy[] = [];
-  for (const blank of blanks) {
-    if (blank === "Skip-Blanks") {
-      out.push(defaultPolicy(blank));
-      continue;
-    }
-    for (const trash of trashActions) {
+  for (const blank of candidateBlankStrategies()) {
+    out.push(defaultPolicy(blank));
+    if (blank === "Skip-Blanks") continue;
+    for (const trash of RARE_ACTIONS) {
       out.push({
         blank,
         rare: { S: "List", A: "List", B: "List", Trash: trash },
-        corrupt: { S: "List", A: "List", B: "List", Trash: "Dump" },
+        corrupt: defaultCorruptPolicy(),
       });
-      // Also: vaal mid/trash then list/dump corrupt (cannot reforge corrupt — PoE2 bench)
-      if (trash === "Chaos") {
-        out.push({
-          blank,
-          rare: { S: "List", A: "List", B: "Vaal", Trash: "Chaos" },
-          corrupt: { S: "List", A: "List", B: "List", Trash: "Dump" },
-        });
-        out.push({
-          blank,
-          rare: { S: "List", A: "List", B: "List", Trash: "Vaal" },
-          corrupt: { S: "List", A: "List", B: "List", Trash: "List" },
-        });
-        out.push({
-          blank,
-          rare: { S: "List", A: "List", B: "List", Trash: "Vaal" },
-          corrupt: { S: "List", A: "List", B: "List", Trash: "Dump" },
-        });
-      }
     }
   }
   return out;
@@ -166,10 +328,11 @@ export function candidatePolicies(): CraftPolicy[] {
  * Used for rare 2-prefix / 2-suffix rolls.
  */
 function weightedUnorderedPairs(
+  baseId: string,
   pool: string[],
 ): Array<{ a: string; b: string; prob: number }> {
   const items = pool
-    .map((id) => ({ id, w: TABLET_MOD_WEIGHTS[id]?.weight ?? 0 }))
+    .map((id) => ({ id, w: modWeightForBase(baseId, id) }))
     .filter((x) => x.w > 0);
   const W = items.reduce((s, x) => s + x.w, 0);
   if (W <= 0 || items.length < 2) return [];
@@ -197,24 +360,24 @@ function accumulateRare2p2sDist(
 ) {
   const base = TABLET_BASES[baseId];
   if (!base) return;
-  const prefPairs = weightedUnorderedPairs(base.allowedPrefixPool);
-  const sufPairs = weightedUnorderedPairs(base.allowedSuffixPool);
+  const prefPairs = weightedUnorderedPairs(baseId, base.allowedPrefixPool);
+  const sufPairs = weightedUnorderedPairs(baseId, base.allowedSuffixPool);
   if (!prefPairs.length || !sufPairs.length) {
     // Degenerate tiny pools: fall back to 1p+1s
     const totalP = base.allowedPrefixPool.reduce(
-      (s, id) => s + (TABLET_MOD_WEIGHTS[id]?.weight ?? 0),
+      (s, id) => s + modWeightForBase(baseId, id),
       0,
     );
     const totalS = base.allowedSuffixPool.reduce(
-      (s, id) => s + (TABLET_MOD_WEIGHTS[id]?.weight ?? 0),
+      (s, id) => s + modWeightForBase(baseId, id),
       0,
     );
     if (totalP <= 0 || totalS <= 0) return;
     for (const pId of base.allowedPrefixPool) {
-      const pw = TABLET_MOD_WEIGHTS[pId]?.weight ?? 0;
+      const pw = modWeightForBase(baseId, pId);
       if (pw <= 0) continue;
       for (const sId of base.allowedSuffixPool) {
-        const sw = TABLET_MOD_WEIGHTS[sId]?.weight ?? 0;
+        const sw = modWeightForBase(baseId, sId);
         if (sw <= 0) continue;
         onTier(modsToRareTier([pId, sId]), (pw / totalP) * (sw / totalS));
       }
@@ -229,6 +392,212 @@ function accumulateRare2p2sDist(
       );
     }
   }
+}
+
+function emptyChaosFrom(): Record<RareTier, Record<RareTier, number>> {
+  return {
+    S: emptyDist(),
+    A: emptyDist(),
+    B: emptyDist(),
+    Trash: emptyDist(),
+  };
+}
+
+/** Identity transition (stay in tier) — unused / zero-mass from-states. */
+function identityChaosFrom(): Record<RareTier, Record<RareTier, number>> {
+  const out = emptyChaosFrom();
+  for (const t of RARE_TIERS) out[t][t] = 1;
+  return out;
+}
+
+const QUALITY_TIERS: ModQualityTier[] = ["S", "A", "B", "Junk"];
+
+function sideFromQualities(
+  q1: ModQualityTier,
+  q2: ModQualityTier | null,
+): SidePattern {
+  const mods: ModQualityTier[] = q2 == null ? [q1] : [q1, q2];
+  let nS = 0;
+  let nA = 0;
+  let nB = 0;
+  for (const q of mods) {
+    if (q === "S") nS++;
+    else if (q === "A") nA++;
+    else if (q === "B") nB++;
+  }
+  if (nS >= 2) return "SS";
+  if (nS >= 1 && nA >= 1) return "SA";
+  if (nS >= 1) return "S";
+  if (nA >= 2) return "AA";
+  if (nA >= 1) return "A";
+  if (nB >= 1) return "B";
+  return "Empty";
+}
+
+function rareTierFromSides(
+  prefQs: ModQualityTier[],
+  sufQs: ModQualityTier[],
+): RareTier {
+  const p = sideFromQualities(prefQs[0]!, prefQs[1] ?? null);
+  const s = sideFromQualities(sufQs[0]!, sufQs[1] ?? null);
+  let score = SIDE_SCORE[p] + SIDE_SCORE[s];
+  const pS = prefQs.filter((q) => q === "S").length;
+  const pA = prefQs.filter((q) => q === "A").length;
+  const sS = sufQs.filter((q) => q === "S").length;
+  const sA = sufQs.filter((q) => q === "A").length;
+  if (pS >= 1 && sS >= 1) score += 25;
+  else if ((pS >= 1 && sA >= 1) || (sS >= 1 && pA >= 1)) score += 20;
+  else if (pA >= 1 && sA >= 1) score += 20;
+  return comboScoreToRareTier(score);
+}
+
+/**
+ * Weighted mass of replacement mods by quality tier (remaining side-mate excluded).
+ */
+function chaosReplacementByQuality(
+  baseId: string,
+  pool: string[],
+  keepId: string,
+): Record<ModQualityTier, number> {
+  const out: Record<ModQualityTier, number> = {
+    S: 0,
+    A: 0,
+    B: 0,
+    Junk: 0,
+  };
+  for (const id of pool) {
+    if (id === keepId) continue;
+    const w = modWeightForBase(baseId, id);
+    if (w > 0) out[modQualityTier(id)] += w;
+  }
+  return out;
+}
+
+const chaosFromCache = new Map<
+  string,
+  Record<RareTier, Record<RareTier, number>>
+>();
+
+/** Test/debug: drop memoized one-affix chaos matrices. */
+export function clearChaosTransitionCache() {
+  chaosFromCache.clear();
+}
+
+/**
+ * PoE2 Chaos Orb: pick one of 4 affixes uniformly, replace from that side's
+ * pool. Tier transitions are averaged over the weighted 2p+2s mass in each
+ * from-tier (MDP state is tier-only).
+ *
+ * Replacement outcomes are bucketed by mod quality (same quality → same
+ * rare tier), so we never enumerate every pool id per slot.
+ */
+export function buildChaosOneAffixTransitions(
+  baseId: string,
+): Record<RareTier, Record<RareTier, number>> {
+  const cached = chaosFromCache.get(baseId);
+  if (cached) return cached;
+
+  const base = TABLET_BASES[baseId];
+  if (!base) return identityChaosFrom();
+
+  const prefPairs = weightedUnorderedPairs(baseId, base.allowedPrefixPool);
+  const sufPairs = weightedUnorderedPairs(baseId, base.allowedSuffixPool);
+  const accum = emptyChaosFrom();
+  const massFrom = emptyDist();
+
+  const addSlot = (
+    from: RareTier,
+    configProb: number,
+    slotProb: number,
+    keepId: string,
+    pool: string[],
+    applyQuality: (q: ModQualityTier) => RareTier,
+  ) => {
+    const byQ = chaosReplacementByQuality(baseId, pool, keepId);
+    const W = QUALITY_TIERS.reduce((s, q) => s + byQ[q], 0);
+    if (!(W > 0)) return;
+    const share = configProb * slotProb;
+    massFrom[from] += share;
+    for (const q of QUALITY_TIERS) {
+      const w = byQ[q];
+      if (!(w > 0)) continue;
+      accum[from][applyQuality(q)] += share * (w / W);
+    }
+  };
+
+  if (!prefPairs.length || !sufPairs.length) {
+    const totalP = base.allowedPrefixPool.reduce(
+      (s, id) => s + modWeightForBase(baseId, id),
+      0,
+    );
+    const totalS = base.allowedSuffixPool.reduce(
+      (s, id) => s + modWeightForBase(baseId, id),
+      0,
+    );
+    if (!(totalP > 0 && totalS > 0)) {
+      const id = identityChaosFrom();
+      chaosFromCache.set(baseId, id);
+      return id;
+    }
+
+    for (const pId of base.allowedPrefixPool) {
+      const pw = modWeightForBase(baseId, pId);
+      if (pw <= 0) continue;
+      const pQ = modQualityTier(pId);
+      for (const sId of base.allowedSuffixPool) {
+        const sw = modWeightForBase(baseId, sId);
+        if (sw <= 0) continue;
+        const sQ = modQualityTier(sId);
+        const configProb = (pw / totalP) * (sw / totalS);
+        const from = rareTierFromSides([pQ], [sQ]);
+        addSlot(from, configProb, 0.5, "", base.allowedPrefixPool, (nq) =>
+          rareTierFromSides([nq], [sQ]),
+        );
+        addSlot(from, configProb, 0.5, "", base.allowedSuffixPool, (nq) =>
+          rareTierFromSides([pQ], [nq]),
+        );
+      }
+    }
+  } else {
+    const slot = 0.25;
+    const qOf = (id: string) => modQualityTier(id);
+    for (const pp of prefPairs) {
+      const pq0 = qOf(pp.a);
+      const pq1 = qOf(pp.b);
+      for (const sp of sufPairs) {
+        const sq0 = qOf(sp.a);
+        const sq1 = qOf(sp.b);
+        const configProb = pp.prob * sp.prob;
+        const from = rareTierFromSides([pq0, pq1], [sq0, sq1]);
+        addSlot(from, configProb, slot, pp.b, base.allowedPrefixPool, (nq) =>
+          rareTierFromSides([nq, pq1], [sq0, sq1]),
+        );
+        addSlot(from, configProb, slot, pp.a, base.allowedPrefixPool, (nq) =>
+          rareTierFromSides([pq0, nq], [sq0, sq1]),
+        );
+        addSlot(from, configProb, slot, sp.b, base.allowedSuffixPool, (nq) =>
+          rareTierFromSides([pq0, pq1], [nq, sq1]),
+        );
+        addSlot(from, configProb, slot, sp.a, base.allowedSuffixPool, (nq) =>
+          rareTierFromSides([pq0, pq1], [sq0, nq]),
+        );
+      }
+    }
+  }
+
+  const out = emptyChaosFrom();
+  for (const from of RARE_TIERS) {
+    const m = massFrom[from];
+    if (!(m > 1e-15)) {
+      out[from][from] = 1;
+      continue;
+    }
+    for (const to of RARE_TIERS) {
+      out[from][to] = accum[from][to] / m;
+    }
+  }
+  chaosFromCache.set(baseId, out);
+  return out;
 }
 
 /**
@@ -246,21 +615,21 @@ function accumulateMeasuredPairSales(
   if (!base) return { globalMeasuredProb, globalProb };
 
   const totalP = base.allowedPrefixPool.reduce(
-    (s, id) => s + (TABLET_MOD_WEIGHTS[id]?.weight ?? 0),
+    (s, id) => s + modWeightForBase(baseId, id),
     0,
   );
   const totalS = base.allowedSuffixPool.reduce(
-    (s, id) => s + (TABLET_MOD_WEIGHTS[id]?.weight ?? 0),
+    (s, id) => s + modWeightForBase(baseId, id),
     0,
   );
   if (totalP <= 0 || totalS <= 0) return { globalMeasuredProb, globalProb };
 
   for (const pId of base.allowedPrefixPool) {
-    const pw = TABLET_MOD_WEIGHTS[pId]?.weight ?? 0;
+    const pw = modWeightForBase(baseId, pId);
     if (pw <= 0) continue;
     const pProb = pw / totalP;
     for (const sId of base.allowedSuffixPool) {
-      const sw = TABLET_MOD_WEIGHTS[sId]?.weight ?? 0;
+      const sw = modWeightForBase(baseId, sId);
       if (sw <= 0) continue;
       const prob = pProb * (sw / totalS);
       globalProb += prob;
@@ -357,6 +726,7 @@ export function buildTierSaleTable(
   accumulateRare2p2sDist(baseId, (tier, prob) => {
     alchDist[tier] += prob;
   });
+  const chaosFrom = buildChaosOneAffixTransitions(baseId);
 
   const measuredSales: Record<RareTier, number[]> = {
     S: [],
@@ -390,7 +760,7 @@ export function buildTierSaleTable(
   // Magic-pipeline → rare tier dist (same labels as alch)
   const pool = [...base.allowedPrefixPool, ...base.allowedSuffixPool];
   const totalW = pool.reduce(
-    (s, id) => s + (TABLET_MOD_WEIGHTS[id]?.weight ?? 0),
+    (s, id) => s + modWeightForBase(baseId, id),
     0,
   );
   let magicDist = emptyDist();
@@ -399,7 +769,7 @@ export function buildTierSaleTable(
     const wTier = (q: ModQualityTier) =>
       pool.reduce((s, id) => {
         if (modQualityTier(id) !== q) return s;
-        return s + (TABLET_MOD_WEIGHTS[id]?.weight ?? 0);
+        return s + modWeightForBase(baseId, id);
       }, 0);
     const pS = wTier("S") / totalW;
     const pA = wTier("A") / totalW;
@@ -428,12 +798,14 @@ export function buildTierSaleTable(
     const sum = RARE_TIERS.reduce((s, t) => s + magicDist[t], 0) || 1;
     for (const t of RARE_TIERS) magicDist[t] /= sum;
 
+    const regalSpend =
+      (pMagicHasS + pMagicHasAOnly) * regal + pMagicJunk * alchOrbCost;
     magicOrbCost =
-      (Number.isFinite(transmute) ? transmute : 0) +
-      (Number.isFinite(aug) ? aug : 0) +
-      (pMagicHasS + pMagicHasAOnly) *
-        (Number.isFinite(regal) ? regal : 0) +
-      pMagicJunk * (Number.isFinite(alchOrbCost) ? alchOrbCost : 0);
+      Number.isFinite(transmute) &&
+      Number.isFinite(aug) &&
+      Number.isFinite(regalSpend)
+        ? transmute + aug + regalSpend
+        : Number.NaN;
   } else {
     magicDist = { ...alchDist };
   }
@@ -443,6 +815,7 @@ export function buildTierSaleTable(
     corrupted,
     alchDist,
     magicDist,
+    chaosFrom,
     measuredFrac,
     magicOrbCost,
     alchOrbCost,
@@ -481,7 +854,7 @@ export function solveRareValues(
   const A: number[][] = Array.from({ length: n }, () => Array(n).fill(0));
   const b: number[] = Array(n).fill(0);
 
-  const dist = sales.alchDist; // chaos / reforge redraw
+  const reforgeDist = sales.alchDist; // reforge = full rare redraw
 
   for (const tier of RARE_TIERS) {
     const i = idx.get(`R:${tier}`)!;
@@ -496,7 +869,8 @@ export function solveRareValues(
       A[i][j] = -1;
       b[i] = -sales.vaalCost;
     } else if (action === "Chaos") {
-      // V = -chaos + Σ P_t V_R_t
+      // One-affix replace: V = -chaos + Σ P(to|from) V_to
+      const dist = sales.chaosFrom[tier];
       A[i][i] = 1;
       b[i] = -sales.chaosCost;
       for (const t2 of RARE_TIERS) {
@@ -509,19 +883,16 @@ export function solveRareValues(
       b[i] = 0;
       for (const t2 of RARE_TIERS) {
         const j = idx.get(`R:${t2}`)!;
-        A[i][j] -= dist[t2] / 3;
+        A[i][j] -= reforgeDist[t2] / 3;
       }
     }
   }
 
   for (const tier of RARE_TIERS) {
     const i = idx.get(`C:${tier}`)!;
-    const action = policy.corrupt[tier];
     A[i][i] = 1;
-    if (action === "List") b[i] = sales.corrupted[tier];
-    else b[i] = Number.isFinite(sales.dumpFloor)
-      ? Math.min(sales.corrupted[tier] || sales.dumpFloor, sales.dumpFloor)
-      : sales.corrupted[tier];
+    // Corrupt List/Dump both realize this tier's ask — never a flat junk floor.
+    b[i] = corruptSaleEx(sales, tier);
   }
 
   const x = solveLinear(A, b);
@@ -596,6 +967,27 @@ export function solvePolicy(
 
   const { rareV, corruptV, note } = solveRareValues(sales, policy);
 
+  const actionMarginals = {
+    S: emptyActionMarginals(),
+    A: emptyActionMarginals(),
+    B: emptyActionMarginals(),
+    Trash: emptyActionMarginals(),
+  } as Record<RareTier, Record<RareAction, number>>;
+  const marginalVsList = emptyDist() as Record<RareTier, number>;
+  const rerollWorthy: RareTier[] = [];
+  for (const tier of RARE_TIERS) {
+    const list = listSaleEx(sales, tier);
+    const v = rareV[tier];
+    marginalVsList[tier] =
+      Number.isFinite(v) && Number.isFinite(list) ? v - list : v;
+    for (const action of RARE_ACTIONS) {
+      const q = qRareAction(sales, tier, action, rareV, corruptV);
+      actionMarginals[tier][action] =
+        Number.isFinite(q) && Number.isFinite(list) ? q - list : q;
+    }
+    if (policy.rare[tier] !== "List") rerollWorthy.push(tier);
+  }
+
   const dist =
     policy.blank === "Magic-Pipeline" ? sales.magicDist : sales.alchDist;
   const blankOutcomes: TierSlice[] = RARE_TIERS.map((tier) => ({
@@ -626,35 +1018,60 @@ export function solvePolicy(
     whiteEV,
     rareV,
     corruptV,
+    marginalVsList,
+    actionMarginals,
+    rerollWorthy,
     sales,
     blankOutcomes,
     note,
   };
 }
 
+/**
+ * Optimize rare actions per tier (marginal vs sell-as-is at that tier), then
+ * pick the best blank strategy under that rare policy.
+ */
 export function recommendPolicy(
   market: MarketPriceCache,
   baseId: string,
 ): MdpSolveResult | null {
+  const sales = buildTierSaleTable(market, baseId);
+  if (!sales) return null;
+
+  const opt = solveOptimalRarePolicy(sales);
   let best: MdpSolveResult | null = null;
-  for (const policy of candidatePolicies()) {
-    const hit = solvePolicy(market, baseId, policy);
+  for (const blank of candidateBlankStrategies()) {
+    const hit = solvePolicy(market, baseId, {
+      blank,
+      rare: opt.rare,
+      corrupt: opt.corrupt,
+    });
     if (!hit) continue;
-    if (!Number.isFinite(hit.whiteEV) && hit.policy.blank !== "Skip-Blanks")
-      continue;
+    if (!Number.isFinite(hit.whiteEV) && blank !== "Skip-Blanks") continue;
     if (!best) {
       best = hit;
       continue;
     }
     const bv = best.whiteEV;
     const cv = hit.whiteEV;
-    // Prefer finite; among finite prefer higher EV; Skip (0) loses to any +EV craft
     if (!Number.isFinite(bv) && Number.isFinite(cv)) best = hit;
     else if (Number.isFinite(bv) && Number.isFinite(cv) && cv > bv) best = hit;
   }
-  // Surface best craft even if negative (Skip still available as policy)
-  if (!best) return solvePolicy(market, baseId, defaultPolicy("Skip-Blanks"));
-  return best;
+  if (!best) {
+    return solvePolicy(market, baseId, {
+      blank: "Skip-Blanks",
+      rare: opt.rare,
+      corrupt: opt.corrupt,
+    });
+  }
+  // Prefer optimal rare solve's marginal tables (same rare policy)
+  return {
+    ...best,
+    marginalVsList: opt.marginalVsList,
+    actionMarginals: opt.actionMarginals,
+    rerollWorthy: opt.rerollWorthy,
+    note: [best.note, opt.note].filter(Boolean).join(" · ") || undefined,
+  };
 }
 
 /** Map MDP rare trash action → legacy rare strategy label for UI. */
@@ -749,7 +1166,7 @@ export function simulatePolicy(
             sale = sales.uncorrupted[tier];
             done = true;
           } else {
-            tier = pickTier(sales.alchDist);
+            tier = pickTier(sales.chaosFrom[tier]);
           }
         } else if (action === "Reforge") {
           // Approximate one item's share: pay nothing, redraw once at 1/3 value path
@@ -773,10 +1190,7 @@ export function simulatePolicy(
       } else {
         const action = policy.corrupt[tier];
         if (action === "List") sale = sales.corrupted[tier];
-        else
-          sale = Number.isFinite(sales.dumpFloor)
-            ? Math.min(sales.corrupted[tier], sales.dumpFloor)
-            : sales.corrupted[tier];
+        else sale = corruptSaleEx(sales, tier);
         if (tier !== "Trash") hits++;
         done = true;
       }

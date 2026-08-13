@@ -5,7 +5,9 @@ import {
   classifySide,
   comboScoreToRareTier,
   itemComboScore,
+  modQualityTier,
 } from "@/web/price-check/tablets/mod-tiers";
+import { WEIGHT_BENCH } from "@/web/price-check/tablets/mod-weights";
 
 describe("multi-affix combo tiering", () => {
   it("side ladder: SS > SA > S > AA > A > B", () => {
@@ -74,10 +76,10 @@ describe("multi-affix combo tiering", () => {
         "breach_splinter_qty_t2",
       ]).rareTier,
     ).toBe("S");
-    // Cross: A prefix + S suffix
+    // Cross: A prefix + S suffix (eff is shared prefix; pack is Breach suffix)
     expect(
       classifyModCombo([
-        "breach_pack_size_t1",
+        "junk_monster_eff_t1",
         "junk_xp_t1",
         "breach_splinter_qty_t1",
         "junk_extra_shrine_t1",
@@ -105,24 +107,48 @@ describe("multi-affix combo tiering", () => {
   });
 
   it("1p+1s pairs use the same scorer", () => {
-    // A prefix + S suffix → cross SA → S
+    // Same-side SA (Breach pack + Domain) → S
     expect(
       classifyModCombo(["breach_pack_size_t1", "breach_splinter_qty_t1"])
         .rareTier,
     ).toBe("S");
-    // A prefix + B hiveblood → B (hiveblood dump on SC)
+    // Same-side A+B → B (hiveblood dump on SC)
     expect(
       classifyModCombo(["breach_pack_size_t1", "breach_hiveblood_t1"]).rareTier,
     ).toBe("B");
-    // A|A cross (potency + unstable) → MDP S (SC liquid ~329ex)
+    // Same-side AA (potency + unstable, both suffixes on PoE2DB) → MDP A
     expect(
       classifyModCombo([
         "breach_rare_potency_t1",
-        "junk_xp_t1",
         "breach_unstable_rare_t1",
-        "junk_extra_shrine_t1",
+      ]).rareTier,
+    ).toBe("A");
+    // Cross A|A (shared eff prefix + potency suffix) → MDP S
+    expect(
+      classifyModCombo([
+        "junk_monster_eff_t1",
+        "breach_rare_potency_t1",
       ]).rareTier,
     ).toBe("S");
   });
 });
 
+describe("post-0.5 trusted quality tags", () => {
+  it("marks Ritual rerolls and Abyss +rares as S", () => {
+    expect(modQualityTier("ritual_reroll_t1")).toBe("S");
+    expect(modQualityTier("abyss_rare_spawn_t1")).toBe("S");
+    expect(modQualityTier("temple_crystal_t1")).toBe("S");
+  });
+
+  it("demotes Abyss desecrated currency and promotes supports", () => {
+    expect(modQualityTier("abyss_desecrated_t1")).toBe("B");
+    expect(modQualityTier("ritual_omen_t1")).toBe("A");
+    expect(modQualityTier("delirium_fracturing_t1")).toBe("A");
+    expect(modQualityTier("junk_monster_eff_t1")).toBe("A");
+  });
+
+  it("keeps WEIGHT_BENCH out of EV until fitted", () => {
+    expect(WEIGHT_BENCH.some((r) => r.id === "ritual_reroll_t1")).toBe(true);
+    expect(WEIGHT_BENCH.every((r) => r.holdReason.length > 0)).toBe(true);
+  });
+});

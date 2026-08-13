@@ -50,7 +50,11 @@ export function parseTablet(rawLines: string[]): ParsedTabletItem | null {
       const match = line.match(mod.statPattern);
       if (!match) continue;
 
-      const rolledValue = parseFloat(match[1]);
+      // Flat mods (no numeric roll) omit a capture — use minValue as the roll.
+      const rolledValue =
+        match[1] != null && match[1] !== ""
+          ? parseFloat(match[1])
+          : mod.minValue;
       if (Number.isNaN(rolledValue)) continue;
       if (rolledValue < mod.minValue || rolledValue > mod.maxValue) continue;
 

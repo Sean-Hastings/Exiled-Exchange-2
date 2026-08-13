@@ -7,19 +7,70 @@ import type {
  * Approximate tablet affix pools & weights for EV simulation.
  *
  * PoE2DB: "Modifier weight information cannot be obtained from game files."
- * Patch 0.3.1 added filler mods that flood the explicit pool (Mobalytics /
- * community notes). Weights below are seed estimates: desirable mods stay
- * scarce (~250–600), shared junk fillers dominate (~1100–1500) so hit rates
- * under-estimate rather than over-estimate.
+ * Patch 0.3.1 added filler mods that flood the explicit pool. 0.5.0 retuned
+ * general tablet magnitudes (+ reduced variance) and added Temple tablets.
+ *
+ * Weights below are seed estimates (desirable ~250–600, junk ~1100–1500) so
+ * hit rates under-estimate rather than over-estimate — **except** Temple
+ * `weightOverrides`, fitted from post-0.5 local craft samples.
+ *
+ * Community craft rates for other bases live in {@link WEIGHT_BENCH} until
+ * fitted the same way. Do not promote bench rows into overrides without a
+ * clean post-0.5 slam sample.
  *
  * Rares are modeled as 2 prefixes + 2 suffixes (see tablet-mdp).
  */
 
+/**
+ * Tracked but untrusted spawn-rate priors (not applied to EV).
+ * Promote to `weightOverrides` only after local slam fits on current patch.
+ */
+export const WEIGHT_BENCH: ReadonlyArray<{
+  id: string;
+  baseId: string;
+  claim: string;
+  source: string;
+  dated: string;
+  /** Why this is not yet in weightOverrides. */
+  holdReason: string;
+}> = [
+  {
+    id: "ritual_reroll_t1",
+    baseId: "ritual_tablet",
+    claim: "~0.75%/suffix (12/1600); Chaos ~3/1000 one-affix hits",
+    source: "YouTube Vascor Ritual tablet craft (jS2KF53lElE)",
+    dated: "2026-06-08",
+    holdReason:
+      "Post-0.5 but Chaos≠clean pool weight; need local alch/magic/chaos slam fit",
+  },
+  {
+    id: "breach_unstable_rare_t1",
+    baseId: "breach_tablet",
+    claim: "~5.5% presence for unstable +rares (any 1–3)",
+    source: "r/PathOfExile2 sell-shovels thread (u/Sirzento)",
+    dated: "2026-06-17",
+    holdReason:
+      "Post-0.5 anecdotal; seed weight 1100 likely too common — refit before override",
+  },
+  {
+    id: "expedition_logbook_t1",
+    baseId: "expedition_tablet",
+    claim: "Rough 5–20%/chaos fishing (stream anecdote)",
+    source: "YouTube Expedition logbook farm labeled 0.4.0",
+    dated: "pre-0.5.0",
+    holdReason: "Pre-0.5 general-mod retune — discard for weights",
+  },
+];
+
 /** Shared map-content junk (0.3.1 fillers + common generic) — all tablet bases. */
+/** Shared map-content fillers (0.3.1 flood + CoE/PoE2DB commons on every base). */
 export const SHARED_GENERIC_PREFIXES = [
   "junk_item_rarity_t1",
   "junk_gold_t1",
   "junk_xp_t1",
+  "map_pack_size_t1",
+  "map_pack_size_t2",
+  "junk_monster_rarity_t1",
   "junk_magic_mons_t1",
   "junk_rare_mons_t1",
   "junk_rare_chests_t1",
@@ -31,6 +82,8 @@ export const SHARED_GENERIC_PREFIXES = [
 ] as const;
 
 export const SHARED_GENERIC_SUFFIXES = [
+  "map_waystone_qty_t1",
+  "junk_unique_extra_mod_t1",
   "junk_extra_shrine_t1",
   "junk_extra_strongbox_t1",
   "junk_shrine_chance_t1",
@@ -74,18 +127,17 @@ export const TABLET_BASES: Record<string, TabletBaseDefinition> = {
     category: "Breach",
     tag: "tower_augment_breach",
     ...pools(
+      [],
       [
+        "breach_rare_potency_t1",
         "breach_pack_size_t1",
         "breach_pack_size_t2",
-        "breach_rare_potency_t1",
-        "map_quantity_t2",
-        "map_pack_size_t2",
-      ],
-      [
+        // Legacy parse: Domain splinters may still appear on old items.
         "breach_splinter_qty_t1",
         "breach_splinter_qty_t2",
         "breach_hiveblood_t1",
         "breach_wombgift_qty_t1",
+        "breach_wombgift_level_t1",
         "breach_unstable_rare_t1",
         "breach_vruun_chance_t1",
       ],
@@ -98,19 +150,19 @@ export const TABLET_BASES: Record<string, TabletBaseDefinition> = {
     aliases: ["Delirium Precursor Tablet", "Precursor Tablet of Delirium"],
     category: "Delirium",
     tag: "tower_augment_delirium",
+    // PoE2DB: all Delirium exclusives are suffixes.
     ...pools(
+      [],
       [
         "delirium_pack_size_t1",
         "delirium_pack_size_t2",
-        "map_pack_size_t1",
-        "map_pack_size_t2",
-        "map_quantity_t2",
-      ],
-      [
         "delirium_splinter_stack_t1",
         "delirium_splinter_stack_t2",
+        "delirium_fracturing_t1",
         "delirium_boss_chance_t1",
         "delirium_fog_duration_t1",
+        "delirium_fog_slower_t1",
+        "delirium_deliriousness_t1",
         "delirium_mirror_shards_t1",
         "delirium_timer_pause_t1",
       ],
@@ -127,18 +179,15 @@ export const TABLET_BASES: Record<string, TabletBaseDefinition> = {
     category: "Expedition",
     tag: "tower_augment_expedition",
     ...pools(
+      ["expedition_markers_t1"],
       [
         "expedition_relic_effect_t1",
         "expedition_rare_monsters_t1",
-        "map_pack_size_t2",
-        "map_quantity_t2",
-        "expedition_markers_t1",
-      ],
-      [
         "expedition_logbook_t1",
         "expedition_logbook_t2",
         "expedition_artifacts_t1",
         "expedition_explosive_radius_t1",
+        "expedition_explosive_range_t1",
         "expedition_remnants_t1",
       ],
     ),
@@ -151,14 +200,17 @@ export const TABLET_BASES: Record<string, TabletBaseDefinition> = {
     category: "Ritual",
     tag: "tower_augment_ritual",
     ...pools(
-      ["map_pack_size_t1", "map_pack_size_t2", "map_quantity_t2"],
+      [],
       [
-        "map_rarity_t1",
-        "map_quantity_t1",
         "ritual_tribute_t1",
         "ritual_reroll_t1",
         "ritual_omen_t1",
+        "ritual_reroll_cost_t1",
+        "ritual_defer_cost_t1",
         "ritual_defer_t1",
+        "ritual_revived_rare_t1",
+        "ritual_revived_magic_t1",
+        "ritual_free_reroll_t1",
       ],
     ),
     maxAffixes: 4,
@@ -173,12 +225,13 @@ export const TABLET_BASES: Record<string, TabletBaseDefinition> = {
     ],
     category: "Boss",
     tag: "tower_augment_map_boss",
+    // PoE2DB: Overseer exclusives are all suffixes.
     ...pools(
-      ["boss_item_rarity_t1", "map_quantity_t1", "map_pack_size_t2", "map_quantity_t2"],
+      [],
       [
+        "boss_item_rarity_t1",
         "boss_waystone_qty_t1",
         "boss_waystone_qty_t2",
-        "map_rarity_t1",
         "boss_xp_t1",
         "boss_item_qty_t1",
       ],
@@ -191,19 +244,21 @@ export const TABLET_BASES: Record<string, TabletBaseDefinition> = {
     aliases: ["Abyss Precursor Tablet"],
     category: "Abyss",
     tag: "tower_augment_abyss",
+    // PoE2DB: Abyss exclusives are all suffixes.
     ...pools(
+      [],
       [
         "abyss_monster_spawn_t1",
         "abyss_monster_spawn_t2",
-        "map_pack_size_t2",
-        "map_quantity_t2",
-      ],
-      [
         "abyss_desecrated_t1",
         "abyss_depths_t1",
         "abyss_extra_t1",
+        "abyss_four_chance_t1",
+        "abyss_abyssal_mods_t1",
         "abyss_pit_reward_t1",
         "abyss_rare_spawn_t1",
+        "abyss_eff_per_pit_t1",
+        "abyss_pit_difficulty_t1",
       ],
     ),
     maxAffixes: 4,
@@ -218,10 +273,8 @@ export const TABLET_BASES: Record<string, TabletBaseDefinition> = {
     ],
     category: "Irradiated",
     tag: "tower_augment_generic",
-    ...pools(
-      ["map_pack_size_t1", "map_pack_size_t2", "map_quantity_t2"],
-      ["map_rarity_t1", "map_quantity_t1", "map_waystone_qty_t1"],
-    ),
+    // Only shared fillers — CoE shows no Irradiated-exclusive explicits.
+    ...pools([], []),
     maxAffixes: 4,
   },
   temple_tablet: {
@@ -231,14 +284,15 @@ export const TABLET_BASES: Record<string, TabletBaseDefinition> = {
     category: "Temple",
     tag: "tower_augment_incursion",
     ...pools(
-      ["map_pack_size_t2", "map_quantity_t2"],
+      [],
       [
-        "map_rarity_t1",
-        "map_quantity_t1",
         "temple_beacon_pack_t1",
+        "temple_extra_pack_t1",
+        "temple_extra_pack_chance_t1",
         "temple_crystal_t1",
         "temple_chest_rare_t1",
         "temple_unique_monster_t1",
+        "temple_summon_mons_t1",
       ],
     ),
     maxAffixes: 4,
@@ -269,11 +323,13 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
     tradeStatId: "explicit.stat_2017682521",
     tier: 1,
     weight: 400,
-    minValue: 8,
+    // Live PoE2DB Breeding is (5–7)% after 0.5.0; keep upper bound for
+    // legacy/pre-retune clipboard text still in trade.
+    minValue: 5,
     maxValue: 12,
     isPrefix: true,
     category: "Irradiated",
-    valueScore: 85,
+    valueScore: 55,
     regexHint: "pa",
   },
   map_pack_size_t2: {
@@ -284,11 +340,11 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
     tradeStatId: "explicit.stat_2017682521",
     tier: 2,
     weight: 800,
-    minValue: 4,
-    maxValue: 7,
+    minValue: 1,
+    maxValue: 4,
     isPrefix: true,
     category: "Irradiated",
-    valueScore: 55,
+    valueScore: 40,
     regexHint: "pa",
   },
   map_quantity_t1: {
@@ -342,8 +398,9 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
     tradeStatId: "explicit.stat_2777224821",
     tier: 1,
     weight: 450,
-    minValue: 10,
-    maxValue: 25,
+    // PoE2DB / CoE of the Cartographer: (30–40)%
+    minValue: 30,
+    maxValue: 40,
     isPrefix: false,
     category: "Irradiated",
     valueScore: 65,
@@ -353,33 +410,34 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
   // Breach
   breach_pack_size_t1: {
     id: "breach_pack_size_t1",
-    name: "#% increased Pack Size in Map",
-    statPattern: /(\d+)% increased Pack Size in Map/i,
-    statRef: "#% increased Pack Size in Map",
-    tradeStatId: "explicit.stat_2017682521",
+    name: "Breaches in Map have #% increased Pack Size",
+    // PoE2DB: Breaches in Map have (5–15)% — upper half as T1
+    statPattern:
+      /Breaches(?: in Map)? have (\d+)% increased Pack Size/i,
+    tradeStatId: "explicit.stat_breach_pack_size_unknown",
     tier: 1,
     weight: 350,
-    // "Breeding" is 6–10%
-    minValue: 8,
-    maxValue: 10,
-    isPrefix: true,
+    minValue: 10,
+    maxValue: 15,
+    isPrefix: false,
     category: "Breach",
     valueScore: 90,
-    regexHint: "pa",
+    regexHint: "breach.*pa|pa.*breach",
   },
   breach_pack_size_t2: {
     id: "breach_pack_size_t2",
-    name: "#% increased Pack Size in Map",
-    statPattern: /(\d+)% increased Pack Size in Map/i,
-    tradeStatId: "explicit.stat_2017682521",
+    name: "Breaches in Map have #% increased Pack Size",
+    statPattern:
+      /Breaches(?: in Map)? have (\d+)% increased Pack Size/i,
+    tradeStatId: "explicit.stat_breach_pack_size_unknown",
     tier: 2,
     weight: 700,
-    minValue: 6,
-    maxValue: 7,
-    isPrefix: true,
+    minValue: 5,
+    maxValue: 9,
+    isPrefix: false,
     category: "Breach",
     valueScore: 50,
-    regexHint: "pa",
+    regexHint: "breach.*pa|pa.*breach",
   },
   breach_rare_potency_t1: {
     id: "breach_rare_potency_t1",
@@ -389,9 +447,10 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
     tradeStatId: "explicit.stat_2895378479",
     tier: 1,
     weight: 400,
-    minValue: 15,
-    maxValue: 30,
-    isPrefix: true,
+    // PoE2DB: (5–20)%
+    minValue: 5,
+    maxValue: 20,
+    isPrefix: false,
     category: "Breach",
     valueScore: 75,
     regexHint: "eff.*bre|bre.*eff",
@@ -431,12 +490,13 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
   breach_hiveblood_t1: {
     id: "breach_hiveblood_t1",
     name: "#% increased Quantity of Hiveblood found in Map",
+    // PoE2DB: (30–60)%
     statPattern: /(\d+)% increased Quantity of Hiveblood found(?: in Map)?/i,
     tradeStatId: "explicit.stat_2778285247",
     tier: 1,
     weight: 500,
-    minValue: 10,
-    maxValue: 25,
+    minValue: 30,
+    maxValue: 60,
     isPrefix: false,
     category: "Breach",
     valueScore: 55,
@@ -447,14 +507,15 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
   delirium_pack_size_t1: {
     id: "delirium_pack_size_t1",
     name: "Delirium Monsters in Map have #% increased Pack Size",
+    // PoE2DB: (15–30)% suffix
     statPattern:
       /Delirium Monsters in Map have (\d+)% increased Pack Size/i,
     tradeStatId: "explicit.stat_3465791711",
     tier: 1,
     weight: 350,
-    minValue: 10,
-    maxValue: 20,
-    isPrefix: true,
+    minValue: 23,
+    maxValue: 30,
+    isPrefix: false,
     category: "Delirium",
     valueScore: 88,
     regexHint: "del.*pa|pa.*del",
@@ -467,9 +528,9 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
     tradeStatId: "explicit.stat_3465791711",
     tier: 2,
     weight: 700,
-    minValue: 5,
-    maxValue: 9,
-    isPrefix: true,
+    minValue: 15,
+    maxValue: 22,
+    isPrefix: false,
     category: "Delirium",
     valueScore: 45,
     regexHint: "del.*pa|pa.*del",
@@ -524,14 +585,15 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
   expedition_relic_effect_t1: {
     id: "expedition_relic_effect_t1",
     name: "#% increased Effect of Expedition Remnants in Map",
+    // PoE2DB: (12–18)% suffix
     statPattern:
       /(\d+)% increased Effect of (?:Expedition )?Remnants(?: in Map| in Area| in your Maps)?/i,
     tradeStatId: "explicit.stat_3078574625",
     tier: 1,
     weight: 450,
-    minValue: 15,
-    maxValue: 30,
-    isPrefix: true,
+    minValue: 12,
+    maxValue: 18,
+    isPrefix: false,
     category: "Expedition",
     valueScore: 72,
     regexHint: "remn",
@@ -539,14 +601,15 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
   expedition_rare_monsters_t1: {
     id: "expedition_rare_monsters_t1",
     name: "#% increased number of Rare Expedition Monsters in Map",
+    // PoE2DB: (25–40)% suffix
     statPattern:
       /(\d+)% increased number of Rare Expedition Monsters(?: in Map)?/i,
     tradeStatId: "explicit.stat_2694800111",
     tier: 1,
     weight: 500,
-    minValue: 15,
-    maxValue: 30,
-    isPrefix: true,
+    minValue: 25,
+    maxValue: 40,
+    isPrefix: false,
     category: "Expedition",
     valueScore: 68,
     regexHint: "rare.*exp|exp.*rare",
@@ -601,14 +664,15 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
   boss_item_rarity_t1: {
     id: "boss_item_rarity_t1",
     name: "#% increased Rarity of Items dropped by Map Bosses",
+    // PoE2DB: (35–60)% suffix
     statPattern:
       /(\d+)% increased Rarity of Items dropped by Map Bosses/i,
     tradeStatId: "explicit.stat_4255069232",
     tier: 1,
     weight: 400,
-    minValue: 20,
-    maxValue: 40,
-    isPrefix: true,
+    minValue: 35,
+    maxValue: 60,
+    isPrefix: false,
     category: "Boss",
     valueScore: 78,
     regexHint: "rar.*boss|boss.*rar",
@@ -616,13 +680,14 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
   boss_waystone_qty_t1: {
     id: "boss_waystone_qty_t1",
     name: "#% increased Quantity of Waystones dropped by Map Bosses",
+    // PoE2DB: (18–30)% — upper half as T1
     statPattern:
       /(\d+)% increased Quantity of Waystones dropped by Map Bosses/i,
     tradeStatId: "explicit.stat_1457896329",
     tier: 1,
     weight: 300,
-    minValue: 20,
-    maxValue: 40,
+    minValue: 24,
+    maxValue: 30,
     isPrefix: false,
     category: "Boss",
     valueScore: 92,
@@ -636,8 +701,8 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
     tradeStatId: "explicit.stat_1457896329",
     tier: 2,
     weight: 650,
-    minValue: 10,
-    maxValue: 19,
+    minValue: 18,
+    maxValue: 23,
     isPrefix: false,
     category: "Boss",
     valueScore: 55,
@@ -648,13 +713,14 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
   abyss_monster_spawn_t1: {
     id: "abyss_monster_spawn_t1",
     name: "Abysses in Map spawn #% increased Monsters",
+    // PoE2DB: (20–30)% suffix
     statPattern: /Abysses(?: in Map)? spawn (\d+)% increased Monsters/i,
     tradeStatId: "explicit.stat_944630113",
     tier: 1,
     weight: 400,
-    minValue: 20,
-    maxValue: 40,
-    isPrefix: true,
+    minValue: 25,
+    maxValue: 30,
+    isPrefix: false,
     category: "Abyss",
     valueScore: 82,
     regexHint: "spawn",
@@ -666,9 +732,9 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
     tradeStatId: "explicit.stat_944630113",
     tier: 2,
     weight: 750,
-    minValue: 10,
-    maxValue: 19,
-    isPrefix: true,
+    minValue: 20,
+    maxValue: 24,
+    isPrefix: false,
     category: "Abyss",
     valueScore: 48,
     regexHint: "spawn",
@@ -676,31 +742,33 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
   abyss_desecrated_t1: {
     id: "abyss_desecrated_t1",
     name: "#% increased chance for Desecrated Currency from Abysses in Map",
+    // PoE2DB: (20–30)%
     statPattern:
       /(\d+)% increased chance (?:for Desecrated Currency from Abysses(?: in Map)?|to find Desecrated Currency)/i,
     tradeStatId: "explicit.stat_1710200734",
     tier: 1,
     weight: 350,
-    minValue: 15,
+    minValue: 20,
     maxValue: 30,
     isPrefix: false,
     category: "Abyss",
-    valueScore: 90,
+    valueScore: 55,
     regexHint: "dese",
   },
   abyss_depths_t1: {
     id: "abyss_depths_t1",
     name: "Abysses in Map have #% increased chance to lead to an Abyssal Depths",
+    // PoE2DB: (10–20)%
     statPattern:
       /Abysses(?: in Map)? have (\d+)% increased chance to lead to an Abyssal Depths/i,
     tradeStatId: "explicit.stat_2722831300",
     tier: 1,
     weight: 450,
-    minValue: 20,
-    maxValue: 40,
+    minValue: 10,
+    maxValue: 20,
     isPrefix: false,
     category: "Abyss",
-    valueScore: 75,
+    valueScore: 48,
     regexHint: "depth",
   },
   abyss_extra_t1: {
@@ -717,6 +785,36 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
     valueScore: 35,
     regexHint: "abyss",
   },
+  abyss_four_chance_t1: {
+    id: "abyss_four_chance_t1",
+    name: "Map has #% chance to contain four additional Abysses",
+    statPattern:
+      /Map has (\d+)% chance to contain four additional Abysses/i,
+    tradeStatId: "explicit.stat_abyss_four_chance_unknown",
+    tier: 1,
+    weight: 500,
+    minValue: 20,
+    maxValue: 40,
+    isPrefix: false,
+    category: "Abyss",
+    valueScore: 78,
+    regexHint: "four",
+  },
+  abyss_abyssal_mods_t1: {
+    id: "abyss_abyssal_mods_t1",
+    name: "#% increased chance for Abyssal monsters in Map to have Abyssal Modifiers",
+    statPattern:
+      /(\d+)% increased chance for Abyssal monsters(?: in Map)? to have Abyssal Modifiers/i,
+    tradeStatId: "explicit.stat_abyss_abyssal_mods_unknown",
+    tier: 1,
+    weight: 450,
+    minValue: 20,
+    maxValue: 30,
+    isPrefix: false,
+    category: "Abyss",
+    valueScore: 80,
+    regexHint: "abyssal",
+  },
   abyss_pit_reward_t1: {
     id: "abyss_pit_reward_t1",
     name: "Abyss Pits in Map are twice as likely to have Rewards",
@@ -728,7 +826,7 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
     maxValue: 1,
     isPrefix: false,
     category: "Abyss",
-    valueScore: 30,
+    valueScore: 50,
     regexHint: "pit",
   },
   abyss_rare_spawn_t1: {
@@ -743,8 +841,38 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
     maxValue: 2,
     isPrefix: false,
     category: "Abyss",
-    valueScore: 32,
+    valueScore: 95,
     regexHint: "rare.*aby",
+  },
+  abyss_eff_per_pit_t1: {
+    id: "abyss_eff_per_pit_t1",
+    name: "Abyssal Monsters have #% increased Effectiveness for each closed Pit, up to 100%",
+    statPattern:
+      /Abyssal Monsters have (\d+)% increased Effectiveness for each closed Pit/i,
+    tradeStatId: "explicit.stat_abyss_eff_per_pit_unknown",
+    tier: 1,
+    weight: 1100,
+    minValue: 8,
+    maxValue: 12,
+    isPrefix: false,
+    category: "Abyss",
+    valueScore: 52,
+    regexHint: "closed pit|eff.*pit",
+  },
+  abyss_pit_difficulty_t1: {
+    id: "abyss_pit_difficulty_t1",
+    name: "Abyssal Monsters in Map have increased Difficulty and Reward for each closed Pit",
+    statPattern:
+      /Abyssal Monsters(?: in Map)? have increased Difficulty and Reward for each closed Pit/i,
+    tradeStatId: "explicit.stat_abyss_pit_difficulty_unknown",
+    tier: 1,
+    weight: 1200,
+    minValue: 1,
+    maxValue: 1,
+    isPrefix: false,
+    category: "Abyss",
+    valueScore: 40,
+    regexHint: "difficulty.*pit|pit.*reward",
   },
 
   // Breach fillers
@@ -761,6 +889,21 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
     category: "Breach",
     valueScore: 28,
     regexHint: "womb",
+  },
+  breach_wombgift_level_t1: {
+    id: "breach_wombgift_level_t1",
+    name: "Wombgifts have #% chance to drop one Level higher in Map",
+    statPattern:
+      /Wombgifts have (\d+)% chance to drop one Level higher(?: in Map)?/i,
+    tradeStatId: "explicit.stat_breach_wombgift_level_unknown",
+    tier: 1,
+    weight: 1100,
+    minValue: 10,
+    maxValue: 30,
+    isPrefix: false,
+    category: "Breach",
+    valueScore: 24,
+    regexHint: "womb.*level|level.*womb",
   },
   breach_unstable_rare_t1: {
     id: "breach_unstable_rare_t1",
@@ -809,6 +952,36 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
     valueScore: 28,
     regexHint: "fog",
   },
+  delirium_fog_slower_t1: {
+    id: "delirium_fog_slower_t1",
+    name: "Delirium Fog in Map dissipates #% slower",
+    statPattern:
+      /Delirium Fog(?: in Map)? dissipates (\d+)% slower/i,
+    tradeStatId: "explicit.stat_delirium_fog_slower_unknown",
+    tier: 1,
+    weight: 1100,
+    minValue: 20,
+    maxValue: 30,
+    isPrefix: false,
+    category: "Delirium",
+    valueScore: 30,
+    regexHint: "dissipat|slower",
+  },
+  delirium_deliriousness_t1: {
+    id: "delirium_deliriousness_t1",
+    name: "Delirium Fog in Map applies #% increased Deliriousness to Players",
+    statPattern:
+      /Delirium Fog(?: in Map)? applies (\d+)% increased Deliriousness to Players/i,
+    tradeStatId: "explicit.stat_delirium_deliriousness_unknown",
+    tier: 1,
+    weight: 1050,
+    minValue: 15,
+    maxValue: 30,
+    isPrefix: false,
+    category: "Delirium",
+    valueScore: 32,
+    regexHint: "delirious",
+  },
   delirium_mirror_shards_t1: {
     id: "delirium_mirror_shards_t1",
     name: "Delirium Fog in Map spawns #% increased MirrorShards",
@@ -823,6 +996,21 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
     category: "Delirium",
     valueScore: 30,
     regexHint: "shard",
+  },
+  delirium_fracturing_t1: {
+    id: "delirium_fracturing_t1",
+    name: "Delirium Fog in Map spawns #% increased Fracturing Mirrors",
+    statPattern:
+      /Delirium Fog(?: in Map)? spawns (\d+)% increased Fracturing Mirrors/i,
+    tradeStatId: "explicit.stat_delirium_fracturing_unknown",
+    tier: 1,
+    weight: 400,
+    minValue: 15,
+    maxValue: 30,
+    isPrefix: false,
+    category: "Delirium",
+    valueScore: 85,
+    regexHint: "fract",
   },
   delirium_timer_pause_t1: {
     id: "delirium_timer_pause_t1",
@@ -871,6 +1059,21 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
     valueScore: 28,
     regexHint: "explo",
   },
+  expedition_explosive_range_t1: {
+    id: "expedition_explosive_range_t1",
+    name: "#% increased Expedition Explosive Placement Range in Map",
+    statPattern:
+      /(\d+)% increased Expedition Explosive Placement Range(?: in Map)?/i,
+    tradeStatId: "explicit.stat_expedition_explosive_range_unknown",
+    tier: 1,
+    weight: 1100,
+    minValue: 15,
+    maxValue: 30,
+    isPrefix: false,
+    category: "Expedition",
+    valueScore: 26,
+    regexHint: "placement|explo.*range",
+  },
   expedition_remnants_t1: {
     id: "expedition_remnants_t1",
     name: "Expeditions in Map have +# Remnants",
@@ -882,11 +1085,11 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
     maxValue: 2,
     isPrefix: false,
     category: "Expedition",
-    valueScore: 32,
+    valueScore: 78,
     regexHint: "remn",
   },
 
-  // Ritual fillers
+  // Ritual
   ritual_tribute_t1: {
     id: "ritual_tribute_t1",
     name: "Monsters Sacrificed at Ritual Altars in Map grant #% increased Tribute",
@@ -899,7 +1102,7 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
     maxValue: 30,
     isPrefix: false,
     category: "Ritual",
-    valueScore: 35,
+    valueScore: 55,
     regexHint: "trib",
   },
   ritual_reroll_t1: {
@@ -914,7 +1117,7 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
     maxValue: 3,
     isPrefix: false,
     category: "Ritual",
-    valueScore: 40,
+    valueScore: 100,
     regexHint: "reroll",
   },
   ritual_omen_t1: {
@@ -929,8 +1132,38 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
     maxValue: 70,
     isPrefix: false,
     category: "Ritual",
-    valueScore: 42,
+    valueScore: 82,
     regexHint: "omen",
+  },
+  ritual_reroll_cost_t1: {
+    id: "ritual_reroll_cost_t1",
+    name: "Rerolling Favours at Ritual Altars in Map costs #% reduced Tribute",
+    statPattern:
+      /Rerolling Favours at Ritual Altars(?: in Map)? costs (\d+)% reduced Tribute/i,
+    tradeStatId: "explicit.stat_ritual_reroll_cost_unknown",
+    tier: 1,
+    weight: 900,
+    minValue: 20,
+    maxValue: 30,
+    isPrefix: false,
+    category: "Ritual",
+    valueScore: 78,
+    regexHint: "reroll.*tribut|tribut.*reroll",
+  },
+  ritual_defer_cost_t1: {
+    id: "ritual_defer_cost_t1",
+    name: "Deferring Favours at Ritual Altars in Map costs #% reduced Tribute",
+    statPattern:
+      /Deferring Favours at Ritual Altars(?: in Map)? costs (\d+)% reduced Tribute/i,
+    tradeStatId: "explicit.stat_ritual_defer_cost_unknown",
+    tier: 1,
+    weight: 1000,
+    minValue: 20,
+    maxValue: 30,
+    isPrefix: false,
+    category: "Ritual",
+    valueScore: 55,
+    regexHint: "defer.*tribut|tribut.*defer",
   },
   ritual_defer_t1: {
     id: "ritual_defer_t1",
@@ -946,6 +1179,51 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
     category: "Ritual",
     valueScore: 25,
     regexHint: "defer",
+  },
+  ritual_revived_rare_t1: {
+    id: "ritual_revived_rare_t1",
+    name: "Revived Monsters from Ritual Altars in Map have #% increased chance to be Rare",
+    statPattern:
+      /Revived Monsters from Ritual Altars(?: in Map)? have (\d+)% increased chance to be Rare/i,
+    tradeStatId: "explicit.stat_ritual_revived_rare_unknown",
+    tier: 1,
+    weight: 1150,
+    minValue: 25,
+    maxValue: 40,
+    isPrefix: false,
+    category: "Ritual",
+    valueScore: 35,
+    regexHint: "revived.*rare|rare.*revived",
+  },
+  ritual_revived_magic_t1: {
+    id: "ritual_revived_magic_t1",
+    name: "Revived Monsters from Ritual Altars in Map have #% increased chance to be Magic",
+    statPattern:
+      /Revived Monsters from Ritual Altars(?: in Map)? have (\d+)% increased chance to be Magic/i,
+    tradeStatId: "explicit.stat_ritual_revived_magic_unknown",
+    tier: 1,
+    weight: 1200,
+    minValue: 35,
+    maxValue: 70,
+    isPrefix: false,
+    category: "Ritual",
+    valueScore: 22,
+    regexHint: "revived.*magic|magic.*revived",
+  },
+  ritual_free_reroll_t1: {
+    id: "ritual_free_reroll_t1",
+    name: "Favours Rerolled at Ritual Altars in Map have #% chance to cost no Tribute",
+    statPattern:
+      /Favours Rerolled at Ritual Altars(?: in Map)? have (\d+)% chance to cost no Tribute/i,
+    tradeStatId: "explicit.stat_ritual_free_reroll_unknown",
+    tier: 1,
+    weight: 1000,
+    minValue: 3,
+    maxValue: 6,
+    isPrefix: false,
+    category: "Ritual",
+    valueScore: 58,
+    regexHint: "cost no|free.*reroll|reroll.*free",
   },
 
   // Boss fillers
@@ -1025,20 +1303,66 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
     valueScore: 26,
     regexHint: "chest",
   },
-  /** Seen on regal+ex sample; exact wording may need clipboard confirmation. */
+  /** PoE2DB: (10–25)% chance to add a Vaal Beacon Unique Monster. */
   temple_unique_monster_t1: {
     id: "temple_unique_monster_t1",
-    name: "Vaal Beacons in Map are guarded by a Unique Monster",
-    statPattern: /Vaal Beacons?.*(?:Unique Monster|unique monster)/i,
+    name: "#% chance to add a Vaal Beacon Unique Monster to the Map",
+    statPattern:
+      /(\d+)% chance to add a Vaal Beacon Unique Monster(?: to the Map)?/i,
     tradeStatId: "explicit.stat_temple_unique_monster_unknown",
     tier: 1,
     weight: 2000,
-    minValue: 1,
-    maxValue: 1,
+    minValue: 10,
+    maxValue: 25,
     isPrefix: false,
     category: "Temple",
     valueScore: 22,
     regexHint: "unique",
+  },
+  temple_extra_pack_t1: {
+    id: "temple_extra_pack_t1",
+    name: "1 extra packs of Monsters around Vaal Beacons in Map",
+    statPattern:
+      /(\d+) extra packs? of Monsters around Vaal Beacons(?: in Map)?/i,
+    tradeStatId: "explicit.stat_temple_extra_pack_unknown",
+    tier: 1,
+    weight: 1300,
+    minValue: 1,
+    maxValue: 1,
+    isPrefix: false,
+    category: "Temple",
+    valueScore: 20,
+    regexHint: "extra pack",
+  },
+  temple_extra_pack_chance_t1: {
+    id: "temple_extra_pack_chance_t1",
+    name: "#% chance for an extra packs of Monsters around Vaal Beacons in Map",
+    statPattern:
+      /(\d+)% chance for an extra packs? of Monsters around Vaal Beacons(?: in Map)?/i,
+    tradeStatId: "explicit.stat_temple_extra_pack_chance_unknown",
+    tier: 1,
+    weight: 1250,
+    minValue: 30,
+    maxValue: 60,
+    isPrefix: false,
+    category: "Temple",
+    valueScore: 24,
+    regexHint: "chance.*pack|pack.*chance",
+  },
+  temple_summon_mons_t1: {
+    id: "temple_summon_mons_t1",
+    name: "#% increased chance Vaal Beacons summon additional Monsters in Map",
+    statPattern:
+      /(\d+)% increased chance Vaal Beacons summon additional Monsters(?: in Map)?/i,
+    tradeStatId: "explicit.stat_temple_summon_mons_unknown",
+    tier: 1,
+    weight: 1200,
+    minValue: 25,
+    maxValue: 50,
+    isPrefix: false,
+    category: "Temple",
+    valueScore: 22,
+    regexHint: "summon.*vaal|vaal.*summon",
   },
 
   // Shared generic junk (0.3.1 pool flood) — high weight, low score
@@ -1053,8 +1377,23 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
     maxValue: 12,
     isPrefix: true,
     category: "Irradiated",
-    valueScore: 18,
+    valueScore: 75,
     regexHint: "rar",
+  },
+  junk_monster_rarity_t1: {
+    id: "junk_monster_rarity_t1",
+    name: "Map has #% increased Monster Rarity",
+    // PoE2DB: (15–20)%
+    statPattern: /Map has (\d+)% increased Monster Rarity/i,
+    tradeStatId: "explicit.stat_junk_monster_rarity_unknown",
+    tier: 1,
+    weight: 1400,
+    minValue: 15,
+    maxValue: 20,
+    isPrefix: true,
+    category: "Irradiated",
+    valueScore: 45,
+    regexHint: "monster rarity",
   },
   junk_gold_t1: {
     id: "junk_gold_t1",
@@ -1109,7 +1448,7 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
     maxValue: 35,
     isPrefix: true,
     category: "Irradiated",
-    valueScore: 20,
+    valueScore: 55,
     regexHint: "rare",
   },
   junk_rare_chests_t1: {
@@ -1137,18 +1476,19 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
     maxValue: 15,
     isPrefix: true,
     category: "Irradiated",
-    valueScore: 22,
+    valueScore: 80,
     regexHint: "effe",
   },
   junk_extra_essence_t1: {
     id: "junk_extra_essence_t1",
     name: "Map contains an additional Essence",
-    statPattern: /Map contains (?:an )?additional Essence/i,
+    // Accepts "an additional" or "(1–2) additional"
+    statPattern: /Map contains (?:(\d+)|an) additional Essences?/i,
     tradeStatId: "explicit.stat_2162684861",
     tier: 1,
     weight: 1300,
     minValue: 1,
-    maxValue: 1,
+    maxValue: 2,
     isPrefix: true,
     category: "Irradiated",
     valueScore: 15,
@@ -1179,7 +1519,7 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
     maxValue: 1,
     isPrefix: true,
     category: "Irradiated",
-    valueScore: 15,
+    valueScore: 78,
     regexHint: "azmer",
   },
   junk_extra_summon_t1: {
@@ -1199,7 +1539,7 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
   junk_extra_shrine_t1: {
     id: "junk_extra_shrine_t1",
     name: "Map contains # additional Shrines",
-    statPattern: /Map contains (\d+) additional Shrines?/i,
+    statPattern: /Map contains (?:(\d+)|an) additional Shrines?/i,
     tradeStatId: "explicit.stat_1468737867",
     tier: 1,
     weight: 1400,
@@ -1213,7 +1553,7 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
   junk_extra_strongbox_t1: {
     id: "junk_extra_strongbox_t1",
     name: "Map contains # additional Strongboxes",
-    statPattern: /Map contains (\d+) additional Strongboxes?/i,
+    statPattern: /Map contains (?:(\d+)|an) additional Strongboxes?/i,
     tradeStatId: "explicit.stat_3240183538",
     tier: 1,
     weight: 1400,
@@ -1306,7 +1646,7 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
     maxValue: 100,
     isPrefix: false,
     category: "Irradiated",
-    valueScore: 12,
+    valueScore: 75,
     regexHint: "azmer",
   },
   junk_map_mods_t1: {
@@ -1320,7 +1660,7 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
     maxValue: 2,
     isPrefix: false,
     category: "Irradiated",
-    valueScore: 20,
+    valueScore: 78,
     regexHint: "mod",
   },
   junk_rare_extra_mod_t1: {
@@ -1337,6 +1677,21 @@ export const TABLET_MOD_WEIGHTS: Record<string, TabletModDefinition> = {
     category: "Irradiated",
     valueScore: 18,
     regexHint: "surpass",
+  },
+  junk_unique_extra_mod_t1: {
+    id: "junk_unique_extra_mod_t1",
+    name: "Unique Monsters have 1 additional Rare Modifiers",
+    statPattern:
+      /Unique Monsters have (\d+) additional Rare Modifiers/i,
+    tradeStatId: "explicit.stat_junk_unique_extra_mod_unknown",
+    tier: 1,
+    weight: 1300,
+    minValue: 1,
+    maxValue: 1,
+    isPrefix: false,
+    category: "Irradiated",
+    valueScore: 20,
+    regexHint: "unique.*rare mod|rare mod.*unique",
   },
 };
 

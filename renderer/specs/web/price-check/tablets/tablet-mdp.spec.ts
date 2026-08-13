@@ -153,10 +153,10 @@ describe("tablet-mdp", () => {
     const market = measuredFixture();
     market.junkSellByBase = { breach_tablet: 40 };
     market.modValueMap = {};
-    // All S-bucket via cross A-prefix + S-suffix
-    market.modValueMap[`breach_pack_size_t1+breach_splinter_qty_t1`] = 15000;
-    market.modValueMap[`breach_rare_potency_t1+breach_splinter_qty_t1`] = 12000;
-    market.modValueMap[`map_quantity_t2+breach_splinter_qty_t1`] = 2500; // solo S → A
+    // S-bucket via shared A-prefix × Domain S-suffix (Breach pack/potency are suffixes)
+    market.modValueMap[`junk_monster_eff_t1+breach_splinter_qty_t1`] = 15000;
+    market.modValueMap[`junk_item_rarity_t1+breach_splinter_qty_t1`] = 12000;
+    market.modValueMap[`junk_gold_t1+breach_splinter_qty_t1`] = 2500; // solo S → A
 
     const sales = buildTierSaleTable(market, "breach_tablet")!;
     // S keys (cross SA): 15000, 12000 → min 12000
@@ -170,7 +170,7 @@ describe("tablet-mdp", () => {
     market.junkSellByBase = { breach_tablet: 40 };
     market.modValueMap = {};
     // Only A-bucket measured (solo S)
-    market.modValueMap[`map_quantity_t2+breach_splinter_qty_t1`] = 5000;
+    market.modValueMap[`junk_gold_t1+breach_splinter_qty_t1`] = 5000;
     const sales = buildTierSaleTable(market, "breach_tablet")!;
     expect(sales.uncorrupted.A).toBe(5000);
     expect(sales.uncorrupted.S).toBe(5000); // inherit A, not dump
@@ -179,9 +179,12 @@ describe("tablet-mdp", () => {
 
   it("junk-heavy 2p+2s pool makes Trash the modal alch outcome", () => {
     const sales = buildTierSaleTable(measuredFixture(), "breach_tablet")!;
+    // Shared multipliers (eff/rarity) are A after post-0.5 tier audit, so
+    // cross-A boosts S share vs the old filler-only world — Trash must still
+    // beat S and A individually.
     expect(sales.alchDist.Trash).toBeGreaterThan(sales.alchDist.S);
-    expect(sales.alchDist.Trash).toBeGreaterThan(0.5);
-    expect(sales.alchDist.S).toBeLessThan(0.15);
+    expect(sales.alchDist.Trash).toBeGreaterThan(sales.alchDist.A);
+    expect(sales.alchDist.Trash).toBeGreaterThan(0.2);
   });
 
   it("no dump×N placeholders — empty measured tier falls back to dump", () => {

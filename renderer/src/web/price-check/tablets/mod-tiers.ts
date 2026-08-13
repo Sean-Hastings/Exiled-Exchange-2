@@ -6,22 +6,32 @@ import type { ModQualityTier } from "./strat-types";
  * S/A/B tier tags + multi-affix combo scoring.
  *
  * SIDE_SCORE / MDP cutoffs are a working prior aligned with strat_reco.md.
- * **Breach** is the calibration base via the live trade tier survey
- * (`tier-survey.md`). Other tablet types reuse the same ladder; their
- * mod→quality maps are hand-seeded and less precise until surveyed.
+ * **Breach** quality: Runes of Aldur trade survey (`tier-survey.md`).
+ * **Temple** quality: manual trade survey 2026-08-12.
+ * **Ritual / Abyss / Delirium / Irradiated multipliers**: post-0.5.0 guide
+ * consensus (akrpg Jul 2026, Perra Abyss juice, Jun–Jul craft videos) —
+ * ordinal market value only, not spawn weights. Pre-0.5 / tower-era guides
+ * are not used here (see WEIGHT_BENCH in mod-weights.ts).
  */
 const EXPLICIT_TIER_BY_MOD_ID: Record<string, ModQualityTier> = {
   // Irradiated / shared map
   map_waystone_qty_t1: "S",
-  map_pack_size_t1: "A",
+  /** Breeding is (5–7)% on live PoE2DB after 0.5 general retune — support, not chase. */
+  map_pack_size_t1: "B",
   map_pack_size_t2: "B",
   map_quantity_t1: "B",
   map_quantity_t2: "Junk",
   map_rarity_t1: "B",
+  /** Universal multipliers (akrpg): inflate with league S-mods; weak alone. */
+  junk_monster_eff_t1: "A",
+  junk_item_rarity_t1: "A",
+  junk_rare_mons_t1: "B",
+  junk_map_mods_t1: "A",
 
   // Delirium
   delirium_splinter_stack_t1: "S",
   delirium_splinter_stack_t2: "A",
+  delirium_fracturing_t1: "A",
   delirium_pack_size_t1: "A",
   delirium_pack_size_t2: "B",
   delirium_boss_chance_t1: "B",
@@ -42,29 +52,50 @@ const EXPLICIT_TIER_BY_MOD_ID: Record<string, ModQualityTier> = {
   breach_wombgift_qty_t1: "B",
   breach_vruun_chance_t1: "B",
 
-  // Expedition
+  // Expedition — logbooks still the chase; remnants prioritized in 0.5 farm guides.
   expedition_logbook_t1: "S",
   expedition_logbook_t2: "A",
   expedition_relic_effect_t1: "A",
+  expedition_remnants_t1: "A",
   expedition_rare_monsters_t1: "B",
   expedition_artifacts_t1: "B",
 
-  // Boss
+  // Boss / Overseer — Azmeri niche (akrpg); waystone from bosses for sustain.
   boss_waystone_qty_t1: "S",
   boss_waystone_qty_t2: "A",
   boss_item_rarity_t1: "A",
+  junk_extra_azmeri_t1: "A",
+  junk_azmeri_chance_t1: "A",
 
-  // Abyss
-  abyss_desecrated_t1: "S",
+  // Abyss — Perra juice tier list (0.5): +rares S+; abyssal mods / map rares S;
+  // four-extra Abysses contested (akrpg top vs Perra B) → A until trade survey.
+  // Desecrated currency often overrated for Omen farms → B.
+  abyss_rare_spawn_t1: "S",
+  abyss_abyssal_mods_t1: "A",
+  abyss_four_chance_t1: "A",
   abyss_monster_spawn_t1: "A",
   abyss_monster_spawn_t2: "B",
-  abyss_depths_t1: "A",
+  abyss_desecrated_t1: "B",
+  abyss_depths_t1: "B",
+  abyss_pit_reward_t1: "B",
+
+  // Ritual — post-0.5 flip king: +favour rerolls always money (even 1 sells).
+  ritual_reroll_t1: "S",
+  ritual_omen_t1: "A",
+  ritual_reroll_cost_t1: "A",
+  ritual_defer_cost_t1: "B",
+  ritual_tribute_t1: "B",
+  ritual_defer_t1: "Junk",
 
   // Temple / Vaal — manual trade survey 2026-08-12 (dump≈50, blank≈100).
   // Crystal ~775ex solo; beacon/chest/eff/pack support showed no combo lift.
   temple_crystal_t1: "S",
   temple_beacon_pack_t1: "Junk",
   temple_chest_rare_t1: "Junk",
+  temple_unique_monster_t1: "Junk",
+  temple_extra_pack_t1: "Junk",
+  temple_extra_pack_chance_t1: "Junk",
+  temple_summon_mons_t1: "Junk",
 };
 
 export function modQualityTier(modId: string): ModQualityTier {

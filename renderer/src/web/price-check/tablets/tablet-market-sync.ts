@@ -10,9 +10,19 @@ import {
 } from "@/web/price-check/trade/pathofexile-trade";
 import { RATE_LIMIT_RULES } from "@/web/price-check/trade/common";
 import { RateLimiter } from "@/web/price-check/trade/RateLimiter";
-import { TABLET_BASES, getHighValueModsForBase } from "./mod-weights";
+import { TABLET_BASES, TABLET_MOD_WEIGHTS } from "./mod-weights";
 import { createEmptyMarketCache } from "./default-market";
 import { isFinitePositive } from "./market-sanity";
+import {
+  applySabSyncHit,
+  bestProngSellEx,
+  buildSabSyncWorklist,
+  expandSoloSAOppositePool,
+  finalizeSoloSCurve,
+  isSoloSProngItem,
+} from "./sab-combo-plan";
+import type { RollPriceAnchor } from "./mod-roll-price-curve";
+import type { TabletModDefinition } from "./tablet-types";
 import {
   BUY_DEPTH_COLD_DEFAULT,
   BUY_DEPTH_HOT,
@@ -20,6 +30,7 @@ import {
   BUY_DUST_FLOOR_EX,
   BUY_MAX_EX,
   FLOW_PROBE_MS,
+  FLOW_PROBE_WAIT_SKIP_MS,
   SELL_MAX_EX,
   buyEstimateNote,
   buyMeanEstimateNote,
@@ -29,6 +40,7 @@ import {
   estimateBuyPriceMeanOfCheapestEx,
   estimateSellPriceEx,
   listingAmountToExalt,
+  remainingFlowProbeWaitMs,
   type ExaltFx,
   type MarketFlowRegime,
   type PricedListing,
@@ -63,7 +75,7 @@ import {
 export type { MarketSyncDebug } from "./market-sync-debug";
 
 /** Bump when conversion / estimator semantics change — invalidates persisted cache. */
-export const MARKET_SYNC_REVISION = 19;
+export const MARKET_SYNC_REVISION = 24;
 
 /** Buy blanks: enough depth for buy@N after mixed-currency re-sort. */
 const BUY_LISTING_SAMPLE = 30;
@@ -479,14 +491,16 @@ function buildSearchTrace(opts: {
  * Buy blanks from the *live* market only.
  *
  * PoE2 trade status labels (official filters):
- * - securable = Instant Buyout (merchant tab / marketplace)
- * - available = Instant Buyout AND In Person
+ * - securable = Instant Buyout (merchant tab / in-game marketplace) — preferred
+ * - available = Instant Buyout AND In Person (whisper) — thin-book fallback
  * - online    = In Person (Online) ONLY — excludes marketplace
  * - any       = includes offline ghosts
  *
- * Trade sorts by *raw* currency amount (1 divine before 50 vaal), so a single
- * mixed-currency page is exalt-biased. We merge an any-currency leg with an
- * exalted-only leg, convert everything to exalt, then estimate.
+ * Prefer securable (in-game Instant Buyout). Fall back to available only when
+ * the marketplace book is thin — unless `forceStatus` locks one band (flow
+ * probe must re-query the same Instant Buyout book).
+ * Trade sorts by *raw* currency amount (1 divine before 50 vaal), so we merge
+ * any-currency + exalted-only legs, convert to exalt, then estimate.
  */
 async function searchBuyPriceEx(
   typeName: string,
@@ -498,6 +512,10 @@ async function searchBuyPriceEx(
   buyFloor: number,
   buyCeiling: number,
   buyDepth: number = BUY_DEPTH_N,
+  opts?: {
+    /** Lock to one status band (no fallback). Used by flow probe #2 / mkt-only snaps. */
+    forceStatus?: "securable" | "available";
+  },
 ): Promise<{
   price: number;
   sampleSize: number;
@@ -513,18 +531,21 @@ async function searchBuyPriceEx(
     kind: "buy-available" | "buy-securable";
     note: string;
   };
-  const bands: BuyBand[] = [
-    {
-      status: "available",
-      kind: "buy-available",
-      note: "instant buyout + in-person online",
-    },
+  const allBands: BuyBand[] = [
     {
       status: "securable",
       kind: "buy-securable",
       note: "marketplace / instant buyout only",
     },
+    {
+      status: "available",
+      kind: "buy-available",
+      note: "instant buyout + in-person online (fallback)",
+    },
   ];
+  const bands = opts?.forceStatus
+    ? allBands.filter((b) => b.status === opts.forceStatus)
+    : allBands;
 
   let best: {
     price: number;
@@ -665,6 +686,23 @@ async function sleepCancellable(
   }
 }
 
+function commitBlankBuyPrice(
+  market: MarketPriceCache,
+  baseId: string,
+  priced: PricedListing[],
+  regime: MarketFlowRegime,
+  buyCountB: number,
+  stats: { basesPriced: number },
+): number | null {
+  const kEff = effectiveBuyCountForRegime(regime, buyCountB);
+  const price = estimateBuyPriceMeanOfCheapestEx(priced, kEff);
+  if (price == null || !isFinitePositive(price)) return null;
+  const wasUnset = !isFinitePositive(market.basePrices[baseId]);
+  market.basePrices[baseId] = price;
+  if (wasUnset) stats.basesPriced++;
+  return price;
+}
+
 /** Sell: stale-anchor + undercut pack below (see estimateSellPriceEx). */
 async function searchSellPriceEx(
   body: TabletTradeSearchBody,
@@ -704,7 +742,9 @@ async function searchSellPriceEx(
         priced: hit.priced,
         estimate: price,
         estimateNote:
-          price != null ? "stale-anchor + undercut pack-below" : "empty",
+          price != null
+            ? `stale-anchor + undercut pack-below · ${body.query.status.option}`
+            : `empty · ${body.query.status.option}`,
         floorEx: 0,
         ceilingEx: sellCeiling,
       }),
@@ -716,6 +756,7 @@ async function searchSellPriceEx(
         kind: "sell-combo",
         label: ctx,
         typeName,
+        statusOption: body.query.status.option,
         rows: [],
         priced: [],
         estimate: null,
@@ -728,6 +769,42 @@ async function searchSellPriceEx(
   }
 }
 
+/**
+ * Prefer in-game Instant Buyout (`securable`); fall back to mixed `available`
+ * only when the marketplace book yields no usable sell estimate.
+ */
+async function searchSellPricePreferMarket(
+  buildBody: (
+    status: "securable" | "available",
+  ) => TabletTradeSearchBody,
+  leagueId: string,
+  fx: ExaltFx,
+  progress: ProgressFn,
+  ctx: string,
+  typeName: string,
+  isCancelled: () => boolean,
+  sellCeiling: number,
+  sample = SELL_LISTING_SAMPLE,
+): Promise<{ price: number | null; trace: SearchDebugTrace }> {
+  let fallback: { price: number | null; trace: SearchDebugTrace } | null = null;
+  for (const status of ["securable", "available"] as const) {
+    const hit = await searchSellPriceEx(
+      buildBody(status),
+      leagueId,
+      fx,
+      progress,
+      `${ctx} ${status}`,
+      typeName,
+      isCancelled,
+      sellCeiling,
+      sample,
+    );
+    if (hit.price != null && isFinitePositive(hit.price)) return hit;
+    if (!fallback) fallback = hit;
+  }
+  return fallback!;
+}
+
 function fullUsesFilter(minUses = FULL_USES) {
   return {
     id: USES_REMAINING_STAT,
@@ -738,7 +815,7 @@ function fullUsesFilter(minUses = FULL_USES) {
 
 function blankTabletQuery(
   baseName: string,
-  status: "securable" | "available" | "online" | "any" = "available",
+  status: "securable" | "available" | "online" | "any" = "securable",
   /** When set, restrict listings to this currency so API price-sort ≈ exalt. */
   priceCurrency?: string,
 ): TabletTradeSearchBody {
@@ -791,17 +868,30 @@ function tradeTypeNamesForBase(base: {
   return [...new Set(names)];
 }
 
-function comboTabletQuery(
+function soloModTabletQuery(
   baseName: string,
-  prefixTradeId: string,
-  suffixTradeId: string,
-  prefixMin?: number,
-  suffixMin?: number,
+  tradeStatId: string,
+  min?: number,
+  status: "securable" | "available" = "securable",
+  max?: number,
+): TabletTradeSearchBody {
+  return multiModTabletQuery(
+    baseName,
+    [{ id: tradeStatId, min, max }],
+    status,
+  );
+}
+
+/** AND of N explicit stats — rare/nonunique tablet with uses left. */
+function multiModTabletQuery(
+  baseName: string,
+  stats: Array<{ id: string; min?: number; max?: number }>,
+  status: "securable" | "available" = "securable",
 ): TabletTradeSearchBody {
   return {
     query: {
-      // Prefer live market for sell comps; offline ghosts inflate thin combo books
-      status: { option: "available" },
+      // Prefer Instant Buyout (in-game mkt); caller may fall back to available
+      status: { option: status },
       type: baseName,
       stats: [
         {
@@ -809,14 +899,20 @@ function comboTabletQuery(
           filters: [
             // Any remaining uses — crafted stock is often partially used
             fullUsesFilter(1),
-            {
-              id: prefixTradeId,
-              value: prefixMin != null ? { min: prefixMin } : undefined,
-            },
-            {
-              id: suffixTradeId,
-              value: suffixMin != null ? { min: suffixMin } : undefined,
-            },
+            ...stats.map((s) => {
+              const hasMin = s.min != null;
+              const hasMax = s.max != null;
+              return {
+                id: s.id,
+                value:
+                  hasMin || hasMax
+                    ? {
+                        ...(hasMin ? { min: s.min } : {}),
+                        ...(hasMax ? { max: s.max } : {}),
+                      }
+                    : undefined,
+              };
+            }),
           ],
         },
       ],
@@ -839,10 +935,13 @@ function comboTabletQuery(
 }
 
 /** Broad junk/rare floor — rolled rares of this base with uses left. */
-function junkTabletQuery(baseName: string): TabletTradeSearchBody {
+function junkTabletQuery(
+  baseName: string,
+  status: "securable" | "available" = "securable",
+): TabletTradeSearchBody {
   return {
     query: {
-      status: { option: "available" },
+      status: { option: status },
       type: baseName,
       stats: [
         {
@@ -887,10 +986,37 @@ function cloneMarketCache(src: MarketPriceCache): MarketPriceCache {
     modValueMap: { ...src.modValueMap },
     modPremiums: src.modPremiums ? { ...src.modPremiums } : {},
     junkSellByBase: src.junkSellByBase ? { ...src.junkSellByBase } : {},
+    measuredAffixSamples: src.measuredAffixSamples
+      ? src.measuredAffixSamples.map((s) => ({
+          ...s,
+          modIds: [...s.modIds],
+        }))
+      : undefined,
+    modRollCurves: src.modRollCurves
+      ? Object.fromEntries(
+          Object.entries(src.modRollCurves).map(([k, c]) => [
+            k,
+            {
+              ...c,
+              anchors: c.anchors.map((a) => ({ ...a })),
+            },
+          ]),
+        )
+      : undefined,
     listingAnchors: src.listingAnchors
       ? { ...src.listingAnchors }
       : undefined,
     fx: src.fx ? { ...src.fx } : undefined,
+    priceSource: src.priceSource
+      ? {
+          junkSellByBase: src.priceSource.junkSellByBase
+            ? { ...src.priceSource.junkSellByBase }
+            : undefined,
+          modValueMap: src.priceSource.modValueMap
+            ? { ...src.priceSource.modValueMap }
+            : undefined,
+        }
+      : undefined,
   };
 }
 
@@ -898,16 +1024,54 @@ function cloneMarketCache(src: MarketPriceCache): MarketPriceCache {
 function clearBaseMarketSlice(market: MarketPriceCache, baseId: string) {
   market.basePrices[baseId] = Number.NaN;
   if (market.junkSellByBase) delete market.junkSellByBase[baseId];
+  if (market.priceSource?.junkSellByBase) {
+    delete market.priceSource.junkSellByBase[baseId];
+  }
+  if (market.measuredAffixSamples) {
+    market.measuredAffixSamples = market.measuredAffixSamples.filter(
+      (s) => s.baseId !== baseId,
+    );
+  }
+  if (market.modRollCurves) {
+    const prefix = `${baseId}/`;
+    for (const key of Object.keys(market.modRollCurves)) {
+      if (key.startsWith(prefix)) delete market.modRollCurves[key];
+    }
+  }
   const base = TABLET_BASES[baseId];
   if (!base) return;
   const ids = new Set([
     ...base.allowedPrefixPool,
     ...base.allowedSuffixPool,
   ]);
-  for (const key of Object.keys(market.modValueMap)) {
-    const [p, s] = key.split("+");
-    if (ids.has(p) && ids.has(s)) delete market.modValueMap[key];
+  // Include orphaned priceSource keys (e.g. source without a live sell)
+  const keys = new Set([
+    ...Object.keys(market.modValueMap),
+    ...Object.keys(market.priceSource?.modValueMap ?? {}),
+  ]);
+  for (const key of keys) {
+    const parts = key.split("+");
+    if (parts.length !== 2) continue;
+    const [p, s] = parts;
+    if (!p || !s || !ids.has(p) || !ids.has(s)) continue;
+    delete market.modValueMap[key];
+    if (market.priceSource?.modValueMap) {
+      delete market.priceSource.modValueMap[key];
+    }
   }
+}
+
+function ensurePriceSource(market: MarketPriceCache) {
+  if (!market.priceSource) market.priceSource = {};
+  if (!market.priceSource.junkSellByBase) market.priceSource.junkSellByBase = {};
+  if (!market.priceSource.modValueMap) market.priceSource.modValueMap = {};
+}
+
+function stampMeasuredJunk(market: MarketPriceCache, baseId: string, price: number) {
+  market.junkSellByBase = market.junkSellByBase ?? {};
+  market.junkSellByBase[baseId] = price;
+  ensurePriceSource(market);
+  market.priceSource!.junkSellByBase![baseId] = "measured";
 }
 
 /** Merge partial sync debug into the previous full trace (replace matching bases). */
@@ -950,7 +1114,7 @@ export async function syncTabletMarketFromTrade(opts?: {
   /** Set false to skip re-query (single snapshot, unknown regime → warm depth). */
   flowProbe?: boolean;
 }): Promise<MarketSyncResult> {
-  const combosPerBase = opts?.combosPerBase ?? 8;
+  const combosPerBase = opts?.combosPerBase ?? 40;
   const progress = opts?.onProgress ?? (() => undefined);
   const isCancelled = opts?.isCancelled ?? (() => false);
   const buyCountB = Math.max(
@@ -1100,7 +1264,18 @@ export async function syncTabletMarketFromTrade(opts?: {
     };
     const pendingBuys: PendingBuy[] = [];
 
-    // Phase 1 — first buy snapshots for every base (weaves into probe wait).
+    // ── Bookend flow probe ──────────────────────────────────────────────
+    // Probe#1 (first) → junk/combo middle work burns the gap → per-base
+    // remainder wait → Probe#2 (last). Wall-clock between snap1→snap2 is the
+    // detection window only; classifyMarketFlow / mean-of-B do not use gap ms.
+    // Variable gap: if middle work already took ≥ FLOW_PROBE_MS, skip idle wait.
+    //
+    // Provisional blank: junk/combo trade searches do not need blank prices,
+    // but we still commit snap1 @ regime=unknown (warm depth) so basePrices
+    // exist during middle work / partial cancel. Probe#2 overwrites with
+    // snap2 + classified regime for the final market.
+
+    // Phase 1 — Flow probe #1 for every base (securable; thin → available, skip #2).
     let baseIdx = 0;
     for (const base of bases) {
       if (isCancelled()) throw new Error("Market sync cancelled");
@@ -1108,7 +1283,7 @@ export async function syncTabletMarketFromTrade(opts?: {
       const ctx = filterIds
         ? `Blank: ${base.name}`
         : `Blank ${baseIdx}/${bases.length}: ${base.name}`;
-      progress(`${ctx} probe#1…`);
+      progress(`${ctx} Flow probe #1…`);
 
       const typeNames = tradeTypeNamesForBase(base);
       const entry: BaseBuyDebugTrace = {
@@ -1122,26 +1297,55 @@ export async function syncTabletMarketFromTrade(opts?: {
       for (const typeName of typeNames) {
         entry.typeNamesTried.push(typeName);
         try {
-          const hit = await searchBuyPriceEx(
-            typeName,
-            leagueId,
-            fx,
-            progress,
-            `${ctx} #1`,
-            isCancelled,
-            buyFloor,
-            buyCeiling,
-            coldBuyDepth,
-          );
+          // Flow probe must watch Instant Buyout refill — not whisper listings.
+          let hit = flowProbeEnabled
+            ? await searchBuyPriceEx(
+                typeName,
+                leagueId,
+                fx,
+                progress,
+                `${ctx} #1 mkt`,
+                isCancelled,
+                buyFloor,
+                buyCeiling,
+                coldBuyDepth,
+                { forceStatus: "securable" },
+              )
+            : null;
+          // No marketplace book → price from mixed available, skip flow (#2).
+          if (!hit) {
+            hit = await searchBuyPriceEx(
+              typeName,
+              leagueId,
+              fx,
+              progress,
+              flowProbeEnabled ? `${ctx} #1 fallback` : `${ctx} #1`,
+              isCancelled,
+              buyFloor,
+              buyCeiling,
+              coldBuyDepth,
+            );
+          }
           if (hit) {
             entry.searches.push(...hit.traces);
             if (isFinitePositive(hit.price)) {
+              const fetchedAt = Date.now();
+              // Provisional blank from snap1 alone (unknown → warm). Overwritten
+              // after probe#2 when Instant Buyout flow probe runs.
+              commitBlankBuyPrice(
+                market,
+                base.id,
+                hit.priced,
+                "unknown",
+                buyCountB,
+                stats,
+              );
               pendingBuys.push({
                 base,
                 ctx,
                 typeName,
                 snap1: hit,
-                fetchedAt: Date.now(),
+                fetchedAt,
                 entry,
               });
               break;
@@ -1175,97 +1379,14 @@ export async function syncTabletMarketFromTrade(opts?: {
       }
     }
 
-    // Wait out remaining probe delay (snap#1 across bases already burned time).
-    if (flowProbeEnabled && pendingBuys.length) {
-      const oldest = Math.min(...pendingBuys.map((p) => p.fetchedAt));
-      const waitMore = flowProbeMs - (Date.now() - oldest);
-      if (waitMore > 500) {
-        await sleepCancellable(
-          waitMore,
-          isCancelled,
-          progress,
-          "Flow probe wait",
-        );
-      }
-    }
-
-    // Phase 2 — re-query, classify hot/cold, commit buy@depth.
+    // Middle work — burns the probe gap (junk sells + combo sells).
     for (const pending of pendingBuys) {
       if (isCancelled()) throw new Error("Market sync cancelled");
-      const { base, ctx, typeName, snap1, entry } = pending;
-      progress(`${ctx} probe#2…`);
-
-      let regime: MarketFlowRegime = "unknown";
-      let priced = snap1.priced;
-      let status = snap1.status;
-      let mix = snap1.mix;
-      let sampleSize = snap1.sampleSize;
-
-      if (flowProbeEnabled) {
-        try {
-          const snap2 = await searchBuyPriceEx(
-            typeName,
-            leagueId,
-            fx,
-            progress,
-            `${ctx} #2`,
-            isCancelled,
-            buyFloor,
-            buyCeiling,
-            coldBuyDepth,
-          );
-          if (snap2) {
-            entry.searches.push(...snap2.traces);
-            regime = classifyMarketFlow(snap1.priced, snap2.priced);
-            priced = snap2.priced.length ? snap2.priced : snap1.priced;
-            status = snap2.status;
-            mix = snap2.mix;
-            sampleSize = priced.length;
-          } else {
-            regime = "cold";
-          }
-        } catch (e) {
-          if (isCancelled()) throw e;
-          console.warn(`[tablet-market] flow probe ${typeName}`, e);
-          regime = "unknown";
-        }
-      }
-
-      const kEff = effectiveBuyCountForRegime(regime, buyCountB);
-      const price = estimateBuyPriceMeanOfCheapestEx(priced, kEff);
-      entry.searches.push(
-        buildSearchTrace({
-          kind: "buy-online",
-          label: `${ctx} flow=${regime} mean@${kEff}`,
-          typeName,
-          rows: [],
-          priced,
-          estimate: price,
-          estimateNote: `flow=${regime} · ${buyMeanEstimateNote(priced.length, buyCountB, regime)}`,
-          floorEx: buyFloor,
-          ceilingEx: buyCeiling,
-        }),
-      );
-
-      if (price != null && isFinitePositive(price)) {
-        market.basePrices[base.id] = price;
-        stats.basesPriced++;
-        entry.finalBuy = price;
-        entry.finalStatus = status;
-        console.info(
-          `[tablet-market] ${base.name} buy=${price.toFixed(1)}ex ` +
-            `n=${sampleSize} mix=${mix} flow=${regime} mean@${kEff}`,
-        );
-      }
-      baseDebug.push(entry);
-
-      // Junk/rare floor for EV long-tail (unmeasured combos)
-      const junkCtx = filterIds
-        ? `Junk: ${base.name}`
-        : `Junk: ${base.name}`;
+      const { base, typeName } = pending;
+      const junkCtx = `Junk: ${base.name}`;
       progress(junkCtx);
-      const { price: junkPrice, trace } = await searchSellPriceEx(
-        junkTabletQuery(typeName),
+      const { price: junkPrice, trace } = await searchSellPricePreferMarket(
+        (status) => junkTabletQuery(typeName, status),
         leagueId,
         fx,
         progress,
@@ -1284,65 +1405,208 @@ export async function syncTabletMarketFromTrade(opts?: {
         search: trace,
       });
       if (junkPrice != null && isFinitePositive(junkPrice)) {
-        market.junkSellByBase = market.junkSellByBase ?? {};
-        market.junkSellByBase[base.id] = junkPrice;
+        stampMeasuredJunk(market, base.id, junkPrice);
       }
     }
 
     let comboDone = 0;
-    const comboTotal = bases.length * combosPerBase;
-    for (const base of bases) {
-      const highValue = getHighValueModsForBase(base.id, 60).slice(
-        0,
-        Math.max(combosPerBase * 3, 6),
-      );
-      const prefixes = highValue.filter((m) => m.isPrefix);
-      const suffixes = highValue.filter((m) => !m.isPrefix);
-      let comboCount = 0;
+    // Closed S/A/B plan — run all planned searches (safety max via combosPerBase)
+    const plans = bases.map((base) => ({
+      base,
+      work: buildSabSyncWorklist(base.id, combosPerBase),
+    }));
+    const comboTotal = plans.reduce((n, p) => n + p.work.length, 0);
+    for (const { base, work } of plans) {
       const typeName = tradeTypeNamesForBase(base)[0];
 
-      for (const p of prefixes) {
-        for (const s of suffixes) {
-          if (comboCount >= combosPerBase) break;
-          if (isCancelled()) throw new Error("Market sync cancelled");
-          const key = `${p.id}+${s.id}`;
-          comboDone++;
-          const ctx = filterIds
-            ? `Combo ${comboCount + 1}/${combosPerBase}: ${base.name}`
-            : `Combo ${Math.min(comboDone, comboTotal)}/${comboTotal}: ${base.name}`;
-          progress(ctx);
-          const { price, trace } = await searchSellPriceEx(
-            comboTabletQuery(
-              typeName,
-              p.tradeStatId,
-              s.tradeStatId,
-              // Floor of the tier range — midpoint over-constrained thin books
-              Math.ceil(p.minValue),
-              Math.ceil(s.minValue),
-            ),
+      // Buffer solo-S prong anchors until all prongs for a mod complete, then fit once.
+      type ProngBuf = {
+        mod: TabletModDefinition;
+        anchors: RollPriceAnchor[];
+        remaining: number;
+      };
+      const prongBuf = new Map<string, ProngBuf>();
+      for (const item of work) {
+        if (!isSoloSProngItem(item)) continue;
+        const modId = item.modIds[0];
+        if (!modId) continue;
+        const mod = TABLET_MOD_WEIGHTS[modId];
+        if (!mod) continue;
+        const prev = prongBuf.get(modId);
+        if (prev) prev.remaining++;
+        else {
+          prongBuf.set(modId, { mod, anchors: [], remaining: 1 });
+        }
+      }
+
+      for (const item of work) {
+        if (isCancelled()) throw new Error("Market sync cancelled");
+        comboDone++;
+        const ctx = filterIds
+          ? `SAB ${comboDone}/${comboTotal || 1}: ${base.name}`
+          : `SAB ${Math.min(comboDone, comboTotal)}/${comboTotal || 1}: ${base.name}`;
+        progress(ctx);
+        const { price, trace } = await searchSellPricePreferMarket(
+          (status) =>
+            item.stats.length === 1
+              ? soloModTabletQuery(
+                  typeName,
+                  item.stats[0]!.id,
+                  item.stats[0]!.min,
+                  status,
+                  item.stats[0]!.max,
+                )
+              : multiModTabletQuery(typeName, item.stats, status),
+          leagueId,
+          fx,
+          progress,
+          ctx,
+          typeName,
+          isCancelled,
+          sellCeiling,
+        );
+        comboDebug.push({
+          baseId: base.id,
+          baseName: base.name,
+          comboKey: item.comboKey,
+          finalSell: price,
+          search: trace,
+        });
+
+        if (isSoloSProngItem(item)) {
+          const modId = item.modIds[0]!;
+          const buf = prongBuf.get(modId);
+          if (
+            buf &&
+            price != null &&
+            isFinitePositive(price) &&
+            item.prongRoll != null
+          ) {
+            buf.anchors.push({ roll: item.prongRoll, sellEx: price });
+            stats.combosPriced++;
+          }
+          if (buf) {
+            buf.remaining--;
+            if (buf.remaining <= 0) {
+              if (!finalizeSoloSCurve(market, base.id, buf.mod, buf.anchors)) {
+                const best = bestProngSellEx(buf.anchors);
+                if (Number.isFinite(best)) {
+                  expandSoloSAOppositePool(market, base.id, buf.mod, best);
+                }
+              }
+              prongBuf.delete(modId);
+            }
+          }
+          continue;
+        }
+
+        if (price != null && isFinitePositive(price)) {
+          applySabSyncHit(market, base.id, item, price);
+          stats.combosPriced++;
+        }
+      }
+    }
+
+    // Phase 2 — per-base remainder wait (not oldest-global), then probe#2 + final blank.
+    for (const pending of pendingBuys) {
+      if (isCancelled()) throw new Error("Market sync cancelled");
+      const { base, ctx, typeName, snap1, fetchedAt, entry } = pending;
+      // Only probe Instant Buyout refill. Whisper/fallback snaps skip #2.
+      const canFlowProbe =
+        flowProbeEnabled && snap1.status === "securable";
+
+      let regime: MarketFlowRegime = "unknown";
+      let priced = snap1.priced;
+      let status = snap1.status;
+      let mix = snap1.mix;
+      let sampleSize = snap1.sampleSize;
+      let actualGapMs: number | undefined;
+
+      if (canFlowProbe) {
+        // Per-base wait so each Instant Buyout pair spans ~flowProbeMs even when
+        // bases finished probe#1 at different times (avoids over-aging late bases).
+        const waitMore = remainingFlowProbeWaitMs(
+          fetchedAt,
+          Date.now(),
+          flowProbeMs,
+        );
+        if (waitMore > FLOW_PROBE_WAIT_SKIP_MS) {
+          await sleepCancellable(
+            waitMore,
+            isCancelled,
+            progress,
+            "Flow probe wait",
+          );
+        }
+        actualGapMs = Date.now() - fetchedAt;
+        progress(`${ctx} Flow probe #2…`);
+
+        try {
+          const snap2 = await searchBuyPriceEx(
+            typeName,
             leagueId,
             fx,
             progress,
-            ctx,
-            typeName,
+            `${ctx} #2 mkt`,
             isCancelled,
-            sellCeiling,
+            buyFloor,
+            buyCeiling,
+            coldBuyDepth,
+            { forceStatus: "securable" },
           );
-          comboDebug.push({
-            baseId: base.id,
-            baseName: base.name,
-            comboKey: key,
-            finalSell: price,
-            search: trace,
-          });
-          if (price != null && isFinitePositive(price)) {
-            market.modValueMap[key] = price;
-            stats.combosPriced++;
-            comboCount++;
+          if (snap2) {
+            entry.searches.push(...snap2.traces);
+            regime = classifyMarketFlow(snap1.priced, snap2.priced);
+            priced = snap2.priced.length ? snap2.priced : snap1.priced;
+            status = snap2.status;
+            mix = snap2.mix;
+            sampleSize = priced.length;
+          } else {
+            regime = "cold";
           }
+        } catch (e) {
+          if (isCancelled()) throw e;
+          console.warn(`[tablet-market] flow probe ${typeName}`, e);
+          regime = "unknown";
         }
-        if (comboCount >= combosPerBase) break;
+      } else {
+        progress(`${ctx} commit…`);
       }
+
+      const kEff = effectiveBuyCountForRegime(regime, buyCountB);
+      const price = commitBlankBuyPrice(
+        market,
+        base.id,
+        priced,
+        regime,
+        buyCountB,
+        stats,
+      );
+      entry.searches.push(
+        buildSearchTrace({
+          kind: "buy-securable",
+          label: `${ctx} flow=${regime} mean@${kEff} · ${status}`,
+          typeName,
+          statusOption: status,
+          rows: [],
+          priced,
+          estimate: price,
+          estimateNote: `flow=${regime} · ${buyMeanEstimateNote(priced.length, buyCountB, regime)} · ${status}`,
+          floorEx: buyFloor,
+          ceilingEx: buyCeiling,
+        }),
+      );
+
+      if (price != null && isFinitePositive(price)) {
+        entry.finalBuy = price;
+        entry.finalStatus = status;
+        console.info(
+          `[tablet-market] ${base.name} buy=${price.toFixed(1)}ex ` +
+            `n=${sampleSize} mix=${mix} flow=${regime} mean@${kEff}` +
+            (actualGapMs != null ? ` gapMs=${actualGapMs}` : ""),
+        );
+      }
+      baseDebug.push(entry);
     }
   } catch (e) {
     return {
@@ -1389,14 +1653,16 @@ export async function syncTabletMarketFromTrade(opts?: {
   const scopeLabel = filterIds
     ? bases.map((b) => b.name.replace(/ Tablet$/i, "")).join("+")
     : null;
+  const sCurveCount = Object.keys(market.modRollCurves ?? {}).length;
   const sourceParts = [
     `r${MARKET_SYNC_REVISION}`,
     scopeLabel ? `only:${scopeLabel}` : null,
     stats.currenciesPriced ? "ninja orbs" : null,
     stats.basesPriced
-      ? `${stats.basesPriced} bases(mean@hot${BUY_DEPTH_HOT}/B${buyCountB}/warm${BUY_DEPTH_N}${flowProbeEnabled ? "+flow" : ""},10u)`
+      ? `${stats.basesPriced} bases(mean@hot${BUY_DEPTH_HOT}/B${buyCountB}/warm${BUY_DEPTH_N}${flowProbeEnabled ? "+flow(mkt)" : ""},10u,mkt-first)`
       : null,
-    stats.combosPriced ? `${stats.combosPriced} combos(sell)` : null,
+    stats.combosPriced ? `${stats.combosPriced} sab-combos(sell,mkt-first)` : null,
+    sCurveCount ? `+S-curve×${sCurveCount}` : null,
     `${exaltPerChaos.toFixed(0)}ex/c`,
     `${exaltPerDivine.toFixed(0)}ex/div`,
   ].filter(Boolean);
@@ -1439,7 +1705,7 @@ function surveyModQuery(
   },
 ): TabletTradeSearchBody {
   const includeUses = opts?.includeUses !== false;
-  const status = opts?.status ?? "available";
+  const status = opts?.status ?? "securable";
   const filters = [
     ...(includeUses ? [fullUsesFilter(1)] : []),
     ...item.stats.map((s) => ({
@@ -1637,6 +1903,24 @@ export async function runTabletTierSurvey(opts?: {
     );
   };
 
+  /** Instant Buyout first; mixed available only if mkt yields no price. */
+  const sellOncePreferMarket = async (
+    label: string,
+    buildBody: (
+      status: "securable" | "available",
+    ) => TabletTradeSearchBody,
+  ): Promise<{ price: number | null; trace: SearchDebugTrace }> => {
+    let fallback: { price: number | null; trace: SearchDebugTrace } | null =
+      null;
+    for (const status of ["securable", "available"] as const) {
+      const hit = await sellOnce(`${label} ${status}`, buildBody(status));
+      if (hit.trace.error && /rate limit/i.test(hit.trace.error)) return hit;
+      if (hit.price != null && isFinitePositive(hit.price)) return hit;
+      if (!fallback) fallback = hit;
+    }
+    return fallback!;
+  };
+
   try {
     while (true) {
       if (isCancelled()) {
@@ -1670,7 +1954,9 @@ export async function runTabletTierSurvey(opts?: {
 
       try {
         if (item.kind === "anchor-dump") {
-          const { price, trace } = await sellOnce(ctx, junkTabletQuery(typeName));
+          const { price, trace } = await sellOncePreferMarket(ctx, (status) =>
+            junkTabletQuery(typeName, status),
+          );
           if (trace.error && /rate limit/i.test(trace.error)) {
             if ((await handleRateLimit(item, trace.error, ctx)) === "paused") {
               return doc;
@@ -1739,9 +2025,8 @@ export async function runTabletTierSurvey(opts?: {
           id.includes("splinter_qty"),
         );
 
-        let { price, trace } = await sellOnce(
-          ctx,
-          surveyModQuery(typeName, item),
+        let { price, trace } = await sellOncePreferMarket(ctx, (status) =>
+          surveyModQuery(typeName, item, { status }),
         );
 
         if (trace.error && /rate limit/i.test(trace.error)) {
@@ -1757,9 +2042,13 @@ export async function runTabletTierSurvey(opts?: {
           (trace.totalHits == null || trace.totalHits === 0)
         ) {
           progress(`${ctx} — splinter 0 hits, retry without uses`);
-          ({ price, trace } = await sellOnce(
+          ({ price, trace } = await sellOncePreferMarket(
             `${ctx} (no-uses)`,
-            surveyModQuery(typeName, item, { includeUses: false }),
+            (status) =>
+              surveyModQuery(typeName, item, {
+                includeUses: false,
+                status,
+              }),
           ));
           if (trace.error && /rate limit/i.test(trace.error)) {
             if ((await handleRateLimit(item, trace.error, ctx)) === "paused") {

@@ -99,11 +99,7 @@ const props = defineProps<{
   market: MarketPriceCache;
 }>();
 
-const emit = defineEmits<{
-  close: [];
-  "refresh-selected": [];
-  "tier-changed": [];
-}>();
+const emit = defineEmits(["close", "refresh-selected", "tier-changed"]);
 
 const tiers: ModQualityTier[] = ["S", "A", "B", "Junk"];
 const showManual = ref(false);

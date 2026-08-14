@@ -78,21 +78,22 @@ describe("tier-survey-plan", () => {
       fx: { exaltPerChaos: 50, exaltPerDivine: 700 },
     });
     doc.anchors.dumpEx = 30;
-    doc.observations["single:breach_splinter_qty_t1"] = {
-      key: "single:breach_splinter_qty_t1",
+    // Hot non-Junk singles (Domain splinters are Junk — skipped by follow-ups)
+    doc.observations["single:breach_unstable_rare_t1"] = {
+      key: "single:breach_unstable_rare_t1",
       kind: "single",
       label: "s",
-      modIds: ["breach_splinter_qty_t1"],
+      modIds: ["breach_unstable_rare_t1"],
       sellEx: 2000,
       octave: Math.log2(2000 / 30),
       octaveRound: 6,
       updatedAt: Date.now(),
     };
-    doc.observations["single:breach_splinter_qty_t2"] = {
-      key: "single:breach_splinter_qty_t2",
+    doc.observations["single:breach_hiveblood_t1"] = {
+      key: "single:breach_hiveblood_t1",
       kind: "single",
       label: "s",
-      modIds: ["breach_splinter_qty_t2"],
+      modIds: ["breach_hiveblood_t1"],
       sellEx: 800,
       octave: Math.log2(800 / 30),
       octaveRound: 5,
@@ -118,8 +119,8 @@ describe("tier-survey-plan", () => {
     expect(
       extras.some(
         (x) =>
-          x.modIds.includes("breach_splinter_qty_t1") &&
-          x.modIds.includes("breach_splinter_qty_t2"),
+          x.modIds.includes("breach_unstable_rare_t1") &&
+          x.modIds.includes("breach_hiveblood_t1"),
       ),
     ).toBe(true);
   });
@@ -170,12 +171,12 @@ describe("tier-survey-analyze", () => {
     add(
       "pair:sa",
       "pair",
-      ["breach_pack_size_t1", "breach_splinter_qty_t1"],
+      ["breach_pack_size_t1", "breach_unstable_rare_t1"],
       4000,
     );
     expect(
       coarsePattern(
-        ["breach_pack_size_t1", "breach_splinter_qty_t1"],
+        ["breach_pack_size_t1", "breach_unstable_rare_t1"],
         "breach_tablet",
       ),
     ).toBe("SA");

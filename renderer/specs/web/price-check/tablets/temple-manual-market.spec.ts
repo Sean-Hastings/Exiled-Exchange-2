@@ -43,6 +43,9 @@ describe("temple manual survey market", () => {
     expect(sales.uncorrupted.A).toBeLessThanOrEqual(sales.uncorrupted.S);
     expect(sales.uncorrupted.B).toBeGreaterThanOrEqual(60);
     expect(sales.uncorrupted.B).toBeLessThanOrEqual(80);
+    expect(sales.dumpFloorSource).toBe("manual-survey");
+    expect(sales.uncorruptedSource.Trash).toBe("manual-survey");
+    expect(sales.uncorruptedSource.S).toBe("manual-survey");
   });
 
   it("without measured blank buy, Temple craft EV is NaN and Skip wins", () => {
@@ -55,5 +58,68 @@ describe("temple manual survey market", () => {
     expect(hit!.whiteEV).toBe(0);
     const row = new TabletEVEngine(market).calculateBaseEV("temple_tablet");
     expect(Number.isNaN(row.baseCost)).toBe(true);
+  });
+
+  it("stamps priceSource on dump and crystal/mid combo keys", () => {
+    const prior = createEmptyMarketCache();
+    prior.junkSellByBase = { breach_tablet: 25 };
+    prior.priceSource = {
+      junkSellByBase: { breach_tablet: "measured" },
+    };
+    const market = applyTempleManualSurveyMarket(prior);
+    expect(market.priceSource?.junkSellByBase?.temple_tablet).toBe(
+      "manual-survey",
+    );
+    expect(market.priceSource?.junkSellByBase?.breach_tablet).toBe("measured");
+    expect(
+      market.priceSource?.modValueMap?.["map_pack_size_t2+map_rarity_t1"],
+    ).toBe("manual-survey");
+    expect(
+      market.priceSource?.modValueMap?.["junk_gold_t1+junk_extra_strongbox_t1"],
+    ).toBe("manual-survey");
+    const crystalKey = Object.keys(market.modValueMap).find((k) =>
+      k.endsWith("+temple_crystal_t1"),
+    );
+    expect(crystalKey).toBeTruthy();
+    expect(market.priceSource?.modValueMap?.[crystalKey!]).toBe(
+      "manual-survey",
+    );
+  });
+
+  it("does not overwrite finite live Temple sells or their measured stamps", () => {
+    const prior = createEmptyMarketCache();
+    const crystalKey = "junk_monster_eff_t1+temple_crystal_t1";
+    prior.junkSellByBase = { temple_tablet: 42 };
+    prior.modValueMap = {
+      [crystalKey]: 1600,
+      "map_pack_size_t2+map_rarity_t1": 95,
+    };
+    prior.priceSource = {
+      junkSellByBase: { temple_tablet: "measured" },
+      modValueMap: {
+        [crystalKey]: "measured",
+        "map_pack_size_t2+map_rarity_t1": "measured",
+      },
+    };
+
+    const market = applyTempleManualSurveyMarket(prior);
+
+    expect(market.junkSellByBase?.temple_tablet).toBe(42);
+    expect(market.priceSource?.junkSellByBase?.temple_tablet).toBe("measured");
+    expect(market.modValueMap[crystalKey]).toBe(1600);
+    expect(market.priceSource?.modValueMap?.[crystalKey]).toBe("measured");
+    expect(market.modValueMap["map_pack_size_t2+map_rarity_t1"]).toBe(95);
+    expect(
+      market.priceSource?.modValueMap?.["map_pack_size_t2+map_rarity_t1"],
+    ).toBe("measured");
+    // Unmeasured survey keys still seed
+    expect(
+      market.modValueMap["junk_gold_t1+junk_extra_strongbox_t1"],
+    ).toBe(60);
+    expect(
+      market.priceSource?.modValueMap?.[
+        "junk_gold_t1+junk_extra_strongbox_t1"
+      ],
+    ).toBe("manual-survey");
   });
 });

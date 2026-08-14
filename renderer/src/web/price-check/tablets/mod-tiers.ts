@@ -5,14 +5,14 @@ import type { ModQualityTier } from "./strat-types";
 /**
  * S/A/B tier tags + multi-affix combo scoring — **per tablet baseId**.
  *
- * Each base owns an independent map. Do not share one object across bases
- * (Temple/Breach must not mutate each other).
+ * Each base owns an independent sealed map (named tiers + pool fillers → Junk).
+ * Do not share one object across bases.
  *
- * - **Temple** (`temple_tablet`): manual trade survey 2026-08-12
- *   (`manual_review_1.json` / temple-manual-market) — crystal-only premium.
- * - **Breach**: Runes of Aldur survey priors (`tier-survey.md`).
- * - **Other bases**: priors seeded from former global effective tags for mods
- *   in that base's pool — pending per-base trade survey.
+ * Sources (0.5.4 did not retune tablet pools; Domain Breach splinters dead):
+ * - **0.5.4(f) / 0.5 live pools** — PoE2DB exclusives + shared fillers
+ * - **akrpg Jul 2026** trade priors (post–Temple map-device economy)
+ * - **Temple survey 2026-08-12** — crystal-only premium
+ *   (`manual_review_1.json` / temple-manual-market)
  *
  * SIDE_SCORE / MDP cutoffs remain a working prior aligned with strat_reco.md.
  * Fallback when a mod is missing from the base map: valueScore → Junk-by-score
@@ -20,27 +20,9 @@ import type { ModQualityTier } from "./strat-types";
  * MDP/EV/fit knows the base.
  */
 
-/** Shared Irradiated/map priors — copied into each non-Temple base (fresh object). */
-function sharedMapQualityPrior(): Record<string, ModQualityTier> {
-  return {
-    map_waystone_qty_t1: "S",
-    map_pack_size_t1: "B",
-    map_pack_size_t2: "B",
-    map_quantity_t1: "B",
-    map_quantity_t2: "Junk",
-    map_rarity_t1: "B",
-    junk_monster_eff_t1: "A",
-    junk_item_rarity_t1: "A",
-    junk_rare_mons_t1: "B",
-    junk_map_mods_t1: "A",
-    junk_extra_azmeri_t1: "A",
-    junk_azmeri_chance_t1: "A",
-  };
-}
-
 /**
  * Fill every mod in the base pool: named tiers win; unlisted pool mods → Junk.
- * Used for Temple so score-fallback cannot promote fillers to A.
+ * Seals score-fallback so fillers cannot promote to A/S.
  */
 function sealPoolAsJunk(
   baseId: string,
@@ -58,16 +40,9 @@ function sealPoolAsJunk(
   return out;
 }
 
-/** Merge shared prior + exclusives into a new object (never share maps). */
-function baseMap(
-  exclusives: Record<string, ModQualityTier>,
-): Record<string, ModQualityTier> {
-  return { ...sharedMapQualityPrior(), ...exclusives };
-}
-
 /**
- * Per-base quality maps. Independent objects — Temple survey must not affect
- * Breach A|A calibration and vice versa.
+ * Per-base quality maps. Independent sealed objects — Temple survey must not
+ * affect Breach calibration and vice versa.
  */
 const EXPLICIT_TIER_BY_BASE: Record<
   string,
@@ -86,7 +61,6 @@ const EXPLICIT_TIER_BY_BASE: Record<
     map_waystone_qty_t1: "B",
     junk_monster_eff_t1: "B",
     junk_item_rarity_t1: "B",
-    map_rarity_t1: "B",
     // Explicit Junk for exclusives (also sealed for other pool fillers)
     temple_beacon_pack_t1: "Junk",
     temple_chest_rare_t1: "Junk",
@@ -96,65 +70,126 @@ const EXPLICIT_TIER_BY_BASE: Record<
     temple_summon_mons_t1: "Junk",
   }),
 
-  // Priors pending per-base trade survey (seeded from former global tags).
-  breach_tablet: baseMap({
-    breach_splinter_qty_t1: "S",
-    breach_splinter_qty_t2: "A",
+  /**
+   * Breach — akrpg Jul 2026 + 0.5.4 live exclusives.
+   * Domain splinters are LEGACY dead (parse-only) — must NOT be S/A.
+   * Unstable is S so potency(A)+unstable(S) → SA / MDP S (replaces old A|A).
+   */
+  breach_tablet: sealPoolAsJunk("breach_tablet", {
+    breach_unstable_rare_t1: "S",
+    breach_hiveblood_t1: "S",
+    breach_rare_potency_t1: "A",
+    breach_wombgift_qty_t1: "A",
+    breach_wombgift_level_t1: "A",
     breach_pack_size_t1: "A",
     breach_pack_size_t2: "B",
-    breach_rare_potency_t1: "A",
-    breach_hiveblood_t1: "B",
-    breach_unstable_rare_t1: "A",
-    breach_wombgift_qty_t1: "B",
     breach_vruun_chance_t1: "B",
+    junk_monster_eff_t1: "B",
+    junk_item_rarity_t1: "B",
+    // Legacy Domain — dead economy, sealed Junk
+    breach_splinter_qty_t1: "Junk",
+    breach_splinter_qty_t2: "Junk",
   }),
 
-  delirium_tablet: baseMap({
-    delirium_splinter_stack_t1: "S",
-    delirium_splinter_stack_t2: "A",
-    delirium_fracturing_t1: "A",
-    delirium_pack_size_t1: "A",
-    delirium_pack_size_t2: "B",
-    delirium_boss_chance_t1: "B",
-  }),
-
-  expedition_tablet: baseMap({
-    expedition_logbook_t1: "S",
-    expedition_logbook_t2: "A",
-    expedition_relic_effect_t1: "A",
-    expedition_remnants_t1: "A",
-    expedition_rare_monsters_t1: "B",
-    expedition_artifacts_t1: "B",
-  }),
-
-  ritual_tablet: baseMap({
+  /**
+   * Ritual — akrpg Jul 2026; reroll jackpot + omen/cost cluster A.
+   */
+  ritual_tablet: sealPoolAsJunk("ritual_tablet", {
     ritual_reroll_t1: "S",
     ritual_omen_t1: "A",
     ritual_reroll_cost_t1: "A",
-    ritual_defer_cost_t1: "B",
-    ritual_tribute_t1: "B",
-    ritual_defer_t1: "Junk",
+    ritual_free_reroll_t1: "A",
+    ritual_defer_cost_t1: "A",
+    ritual_tribute_t1: "A",
+    ritual_revived_rare_t1: "B",
+    ritual_defer_t1: "B",
+    junk_monster_eff_t1: "B",
+    junk_item_rarity_t1: "B",
+    ritual_revived_magic_t1: "Junk",
   }),
 
-  overseer_tablet: baseMap({
-    boss_waystone_qty_t1: "S",
-    boss_waystone_qty_t2: "A",
-    boss_item_rarity_t1: "A",
-  }),
-
-  abyss_tablet: baseMap({
+  /**
+   * Abyss — four-pit + rare spawn jackpots; shared rarity/eff support A.
+   * Desecrated / depths are dump fillers (sealed Junk).
+   */
+  abyss_tablet: sealPoolAsJunk("abyss_tablet", {
+    abyss_four_chance_t1: "S",
     abyss_rare_spawn_t1: "S",
     abyss_abyssal_mods_t1: "A",
-    abyss_four_chance_t1: "A",
     abyss_monster_spawn_t1: "A",
+    junk_rare_mons_t1: "A",
+    junk_monster_rarity_t1: "A",
+    junk_monster_eff_t1: "A",
+    junk_item_rarity_t1: "A",
+    junk_extra_exile_t1: "A",
     abyss_monster_spawn_t2: "B",
-    abyss_desecrated_t1: "B",
-    abyss_depths_t1: "B",
     abyss_pit_reward_t1: "B",
+    abyss_eff_per_pit_t1: "B",
+    abyss_pit_difficulty_t1: "B",
+    abyss_desecrated_t1: "Junk",
+    abyss_depths_t1: "Junk",
   }),
 
-  /** Irradiated is shared-pool only — copy of shared map prior. */
-  irradiated_tablet: sharedMapQualityPrior(),
+  /**
+   * Delirium — splinter stack T1 jackpot; fog/timer fillers Junk.
+   */
+  delirium_tablet: sealPoolAsJunk("delirium_tablet", {
+    delirium_splinter_stack_t1: "S",
+    delirium_splinter_stack_t2: "A",
+    delirium_fracturing_t1: "A",
+    delirium_mirror_shards_t1: "A",
+    delirium_boss_chance_t1: "A",
+    delirium_pack_size_t1: "A",
+    delirium_pack_size_t2: "B",
+    delirium_timer_pause_t1: "B",
+    delirium_fog_duration_t1: "Junk",
+    delirium_fog_slower_t1: "Junk",
+    delirium_deliriousness_t1: "Junk",
+  }),
+
+  /**
+   * Expedition — remnants + logbook T1 jackpots (akrpg Jul 2026).
+   */
+  expedition_tablet: sealPoolAsJunk("expedition_tablet", {
+    expedition_remnants_t1: "S",
+    expedition_logbook_t1: "S",
+    expedition_logbook_t2: "A",
+    expedition_relic_effect_t1: "A",
+    expedition_rare_monsters_t1: "A",
+    expedition_markers_t1: "A",
+    expedition_artifacts_t1: "B",
+    expedition_explosive_radius_t1: "B",
+    expedition_explosive_range_t1: "B",
+  }),
+
+  /**
+   * Irradiated — shared-pool only; waystone + map-mods jackpots.
+   */
+  irradiated_tablet: sealPoolAsJunk("irradiated_tablet", {
+    map_waystone_qty_t1: "S",
+    junk_map_mods_t1: "S",
+    junk_monster_eff_t1: "A",
+    junk_item_rarity_t1: "A",
+    junk_rare_mons_t1: "A",
+    junk_monster_rarity_t1: "A",
+    map_pack_size_t1: "B",
+    map_pack_size_t2: "B",
+  }),
+
+  /**
+   * Overseer — Azmeri (Wisps-style shared) jackpots; boss qty/rarity A.
+   * No Overseer-exclusive "contains Azmeri" beyond shared azmeri IDs in pool.
+   */
+  overseer_tablet: sealPoolAsJunk("overseer_tablet", {
+    junk_extra_azmeri_t1: "S",
+    junk_azmeri_chance_t1: "S",
+    junk_extra_exile_t1: "A",
+    boss_item_rarity_t1: "A",
+    boss_item_qty_t1: "A",
+    boss_waystone_qty_t1: "A",
+    boss_waystone_qty_t2: "A",
+    boss_xp_t1: "B",
+  }),
 };
 
 /** Session overlay from TierUncertaintyPanel (not yet committed to base maps). */
@@ -322,7 +357,9 @@ export function splitAffixSides(modIds: string[]): {
  * Cross bonuses (prefix × suffix), on top of side scores:
  *   S|S → +25 (double S across sides)
  *   S|A → +20 (divine synergy; strat TRADE_DIVINE)
- *   A|A → +8  (solid double-A without an S)
+ *   A|A → +20 (liquid double-A without an S)
+ *
+ * Breach 0.5.4: potency(A)+unstable(S) same-side → SA (SIDE_SCORE 60 → MDP S).
  */
 export function itemComboScore(modIds: string[], baseId?: string): number {
   const { prefixes, suffixes } = splitAffixSides(modIds);
@@ -337,7 +374,7 @@ export function itemComboScore(modIds: string[], baseId?: string): number {
 
   if (pS >= 1 && sS >= 1) score += 25;
   else if ((pS >= 1 && sA >= 1) || (sS >= 1 && pA >= 1)) score += 20;
-  // SC liquid: potency(A)+unstable(A) ≈ 329ex (n≥1000) — AA is jackpot-tier
+  // Cross A|A (e.g. shared A-prefix × exclusive A-suffix on Abyss/Irradiated)
   else if (pA >= 1 && sA >= 1) score += 20;
 
   return score;

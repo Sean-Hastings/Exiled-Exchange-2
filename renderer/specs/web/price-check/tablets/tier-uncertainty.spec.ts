@@ -101,17 +101,25 @@ describe("tier-uncertainty", () => {
 
   it("session set tier reduces ranking uncertainty", () => {
     const market = createEmptyMarketCache();
-    // Temple seals its pool; use Breach where shared fillers lack explicit tags.
-    const before = rankTierUncertainty("breach_tablet", market, null);
-    const target = before.find(
-      (r) => !hasExplicitTier(r.modId, "breach_tablet"),
-    );
-    expect(target).toBeTruthy();
-    const scoreBefore = target!.score;
-    setSessionModTier(target!.modId, "B");
-    const after = rankTierUncertainty("breach_tablet", market, null);
-    const row = after.find((r) => r.modId === target!.modId)!;
-    expect(row.score).toBeLessThan(scoreBefore);
-    expect(row.tier).toBe("B");
+    // Sealed Breach pool has explicit tags on every pool mod — exercise session
+    // overlay on an unmapped id (same score path the panel uses).
+    const fake = "totally_fake_mod_id_for_session";
+    const before = tierUncertaintyScore(fake, market, null, "breach_tablet");
+    expect(before.reasons.noExplicitTier).toBe(true);
+    setSessionModTier(fake, "B");
+    const after = tierUncertaintyScore(fake, market, null, "breach_tablet");
+    expect(after.score).toBeLessThan(before.score);
+    expect(after.reasons.noExplicitTier).toBe(false);
+
+    // Live pool rows are sealed; session still overrides displayed tier
+    const ranked = rankTierUncertainty("breach_tablet", market, null);
+    expect(ranked.every((r) => !r.reasons.noExplicitTier)).toBe(true);
+    const hive = ranked.find((r) => r.modId === "breach_hiveblood_t1")!;
+    expect(hive.tier).toBe("S");
+    setSessionModTier("breach_hiveblood_t1", "B");
+    const ranked2 = rankTierUncertainty("breach_tablet", market, null);
+    expect(
+      ranked2.find((r) => r.modId === "breach_hiveblood_t1")!.tier,
+    ).toBe("B");
   });
 });

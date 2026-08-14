@@ -49,7 +49,7 @@
       </button>
       <span v-if="busy" class="text-gray-400">
         {{ progressLabel }}
-        <button type="button" class="btn text-xs ml-1" @click="cancel">
+        <button type="button" class="btn text-xs ml-1" @click="() => cancel()">
           Cancel
         </button>
       </span>

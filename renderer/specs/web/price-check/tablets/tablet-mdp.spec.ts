@@ -129,24 +129,17 @@ describe("tablet-mdp", () => {
     const market = measuredFixture();
     market.junkSellByBase = { breach_tablet: 40 };
     market.modValueMap = {};
-    const base = TABLET_BASES.breach_tablet;
-    const sMod = base.allowedSuffixPool.find((id) =>
-      id.includes("splinter_qty_t1"),
-    );
-    const aPref = base.allowedPrefixPool.find((id) =>
-      id.includes("pack_size_t1"),
-    );
-    if (aPref && sMod) market.modValueMap[`${aPref}+${sMod}`] = 2000; // cross SA → S
-    // Solo S → A bucket
-    const junkP = "map_quantity_t2";
-    if (sMod) market.modValueMap[`${junkP}+${sMod}`] = 9000;
+    // Breach exclusives are suffix-only; 1p+1s with S-suffix is MDP A (solo S).
+    // Measure A at two prices — monotone / low-end uses min; S cascades from A.
+    market.modValueMap[`junk_gold_t1+breach_unstable_rare_t1`] = 2000;
+    market.modValueMap[`junk_xp_t1+breach_unstable_rare_t1`] = 9000;
 
     const sales = buildTierSaleTable(market, "breach_tablet")!;
     expect(sales.measuredFrac).toBeGreaterThan(0);
     expect(sales.measuredFrac).toBeLessThan(1);
-    // S measured at 2000, A measured at 9000 → monotone pulls A down to S
-    expect(sales.uncorrupted.S).toBe(2000);
+    // A measured min 2000; S unmeasured → cascade to A
     expect(sales.uncorrupted.A).toBe(2000);
+    expect(sales.uncorrupted.S).toBe(2000);
     expect(sales.uncorrupted.S).toBeGreaterThanOrEqual(sales.uncorrupted.A);
     expect(sales.uncorrupted.Trash).toBeLessThanOrEqual(sales.uncorrupted.B);
     expect(sales.uncorrupted.B).toBeLessThanOrEqual(sales.uncorrupted.A);
@@ -156,40 +149,41 @@ describe("tablet-mdp", () => {
     const market = measuredFixture();
     market.junkSellByBase = { breach_tablet: 40 };
     market.modValueMap = {};
-    // S-bucket via shared A-prefix × Domain S-suffix (Breach pack/potency are suffixes)
-    market.modValueMap[`junk_monster_eff_t1+breach_splinter_qty_t1`] = 15000;
-    market.modValueMap[`junk_item_rarity_t1+breach_splinter_qty_t1`] = 12000;
-    market.modValueMap[`junk_gold_t1+breach_splinter_qty_t1`] = 2500; // solo S → A
+    // Solo S (unstable) → A bucket; Domain splinters are Junk (not S/A)
+    market.modValueMap[`junk_monster_eff_t1+breach_unstable_rare_t1`] = 15000;
+    market.modValueMap[`junk_item_rarity_t1+breach_hiveblood_t1`] = 12000;
+    market.modValueMap[`junk_gold_t1+breach_unstable_rare_t1`] = 2500;
 
     const sales = buildTierSaleTable(market, "breach_tablet")!;
-    // S keys (cross SA): 15000, 12000 → min 12000
-    expect(sales.uncorrupted.S).toBe(12000);
-    // A key (solo S): 2500
+    // A keys (solo S): 15000, 12000, 2500 → min 2500; S cascades
     expect(sales.uncorrupted.A).toBe(2500);
+    expect(sales.uncorrupted.S).toBe(2500);
   });
 
   it("unmeasured better tier inherits worse measured (cascade), not dump crush", () => {
     const market = measuredFixture();
     market.junkSellByBase = { breach_tablet: 40 };
     market.modValueMap = {};
-    // Only A-bucket measured (solo S)
-    market.modValueMap[`junk_gold_t1+breach_splinter_qty_t1`] = 5000;
+    // Only A-bucket measured (solo S via unstable)
+    market.modValueMap[`junk_gold_t1+breach_unstable_rare_t1`] = 5000;
     const sales = buildTierSaleTable(market, "breach_tablet")!;
     expect(sales.uncorrupted.A).toBe(5000);
     expect(sales.uncorrupted.S).toBe(5000); // inherit A, not dump
     expect(sales.uncorrupted.Trash).toBe(40);
+    expect(sales.dumpFloorSource).toBe("measured");
+    expect(sales.uncorruptedSource.A).toBe("measured");
+    expect(sales.uncorruptedSource.S).toBe("cascaded");
+    expect(sales.uncorruptedSource.Trash).toBe("cascaded");
   });
 
   it("junk-heavy 2p+2s pool makes Trash the modal alch outcome", () => {
     const sales = buildTierSaleTable(measuredFixture(), "breach_tablet")!;
-    // Shared multipliers (eff/rarity) are A after post-0.5 tier audit, so
-    // cross-A boosts S share vs the old filler-only world — Trash must still
-    // beat S and A individually.
+    // Shared eff/rarity are B supports; Domain dead — Trash must still beat
+    // S and A individually.
     expect(sales.alchDist.Trash).toBeGreaterThan(sales.alchDist.S);
     expect(sales.alchDist.Trash).toBeGreaterThan(sales.alchDist.A);
     expect(sales.alchDist.Trash).toBeGreaterThan(0.2);
   });
-
   it("no dump×N placeholders — empty measured tier falls back to dump", () => {
     const market = measuredFixture();
     market.modValueMap = {}; // nothing measured
@@ -199,6 +193,9 @@ describe("tablet-mdp", () => {
     expect(sales.uncorrupted.S).toBe(33);
     expect(sales.uncorrupted.A).toBe(33);
     expect(sales.uncorrupted.B).toBe(33);
+    expect(sales.dumpFloorSource).toBe("measured");
+    expect(sales.uncorruptedSource.Trash).toBe("cascaded");
+    expect(sales.uncorruptedSource.S).toBe("cascaded");
   });
 
   it("magic T+A uses separate prefix/suffix pools (not a combined draw)", () => {

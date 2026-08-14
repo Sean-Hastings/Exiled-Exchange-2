@@ -13,7 +13,12 @@
             >{{ evaluation.rareTier }}</span
           >
           <span class="text-base font-semibold tabular-nums">
-            ~{{ fmtEx(evaluation.currentMarketPrice) }}ex
+            ~<FallbackEx
+              :value="evaluation.currentMarketPrice"
+              :source="evaluation.sellPriceSource"
+              :digits="evaluation.currentMarketPrice >= 100 ? 0 : 1"
+              suffix="ex"
+            />
           </span>
         </div>
         <div class="text-xs opacity-90 mt-0.5 leading-snug">
@@ -55,6 +60,7 @@ import {
   UNIVERSAL_CATCHALL_REGEX,
   type TabletItemEvaluation,
 } from "@/web/price-check/tablets";
+import FallbackEx from "./FallbackEx.vue";
 
 const props = defineProps<{
   item: ParsedItem;
@@ -72,10 +78,6 @@ const evaluation = computed<TabletItemEvaluation | null>(() => {
 onMounted(() => {
   void ensureTabletMarketSynced(false);
 });
-
-function fmtEx(n: number): string {
-  return Number.isFinite(n) ? n.toFixed(n >= 100 ? 0 : 1) : "NaN";
-}
 
 const actionLabel = computed(() => {
   switch (evaluation.value?.action) {

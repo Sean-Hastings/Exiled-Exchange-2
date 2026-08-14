@@ -26,7 +26,7 @@ import type {
   RareDispositionStrategy,
 } from "./strat-types";
 import type { MarketPriceCache } from "./tablet-ev-calculator";
-import { dumpFloorEx } from "./market-sanity";
+import { dumpFloorInfo, type PriceSource } from "./market-sanity";
 
 export type RareTier = "S" | "A" | "B" | "Trash";
 
@@ -75,6 +75,8 @@ export interface TierSaleTable {
    * Sell-as-is for any tier uses uncorrupted/corrupted[tier], never this alone.
    */
   dumpFloor: number;
+  dumpFloorSource: PriceSource;
+  uncorruptedSource: Record<RareTier, PriceSource>;
 }
 
 export interface TierSlice {
@@ -708,7 +710,12 @@ export function buildChaosOneAffixTransitions(
 function accumulateMeasuredPairSales(
   baseId: string,
   market: MarketPriceCache,
-  onMeasured: (tier: RareTier, prob: number, sale: number) => void,
+  onMeasured: (
+    tier: RareTier,
+    prob: number,
+    sale: number,
+    source: PriceSource,
+  ) => void,
   wOpts?: ModWeightOpts,
 ): { globalMeasuredProb: number; globalProb: number } {
   const base = TABLET_BASES[baseId];
@@ -736,10 +743,16 @@ function accumulateMeasuredPairSales(
       const prob = pProb * (sw / totalS);
       globalProb += prob;
       const tier = modsToRareTier([pId, sId], baseId);
-      const sale = measured(market.modValueMap[`${pId}+${sId}`]);
+      const key = `${pId}+${sId}`;
+      const sale = measured(market.modValueMap[key]);
       if (Number.isFinite(sale)) {
         globalMeasuredProb += prob;
-        onMeasured(tier, prob, sale);
+        onMeasured(
+          tier,
+          prob,
+          sale,
+          market.priceSource?.modValueMap?.[key] ?? "measured",
+        );
       }
     }
   }
@@ -788,6 +801,8 @@ export function priceTiersFromMeasured(
     : dumpOk
       ? dump
       : Number.NaN;
+  // BENCH: B inherits Trash when unmeasured (OK for now). Reconsider later —
+  // whether B should keep a distinct mid-band seed instead of trash cascade.
   out.B = Number.isFinite(raw.B) ? raw.B : out.Trash;
   out.A = Number.isFinite(raw.A) ? raw.A : out.B;
   out.S = Number.isFinite(raw.S) ? raw.S : out.A;
@@ -798,6 +813,68 @@ export function priceTiersFromMeasured(
   if (Number.isFinite(out.B) && out.Trash > out.B) out.Trash = out.B;
 
   return out;
+}
+
+function sourceAtLowEnd(
+  sales: number[],
+  sources: PriceSource[],
+): PriceSource {
+  if (!sales.length) return "measured";
+  let min = sales[0];
+  let src: PriceSource = sources[0] ?? "measured";
+  for (let i = 1; i < sales.length; i++) {
+    const s = sources[i] ?? "measured";
+    if (sales[i] < min) {
+      min = sales[i];
+      src = s;
+    } else if (sales[i] === min && s === "manual-survey") {
+      src = "manual-survey";
+    }
+  }
+  return src;
+}
+
+function priceTierSourcesFromMeasured(
+  measuredSales: Record<RareTier, number[]>,
+  saleSources: Record<RareTier, PriceSource[]>,
+  dump: number,
+  dumpSource: PriceSource,
+): Record<RareTier, PriceSource> {
+  const dumpOk = Number.isFinite(dump);
+  const has = (t: RareTier) => measuredSales[t].length > 0;
+  const own = (t: RareTier) =>
+    sourceAtLowEnd(measuredSales[t], saleSources[t]);
+
+  let trash: PriceSource;
+  if (has("Trash")) {
+    trash = own("Trash");
+  } else if (dumpOk) {
+    trash =
+      dumpSource === "fraction-of-base" || dumpSource === "manual-survey"
+        ? dumpSource
+        : "cascaded";
+  } else {
+    trash = "measured";
+  }
+
+  const inherited = dumpOk || has("Trash") || has("B") || has("A");
+  const b: PriceSource = has("B")
+    ? own("B")
+    : dumpOk || has("Trash")
+      ? "cascaded"
+      : "measured";
+  const a: PriceSource = has("A")
+    ? own("A")
+    : dumpOk || has("Trash") || has("B")
+      ? "cascaded"
+      : "measured";
+  const s: PriceSource = has("S")
+    ? own("S")
+    : inherited
+      ? "cascaded"
+      : "measured";
+
+  return { S: s, A: a, B: b, Trash: trash };
 }
 
 /**
@@ -816,7 +893,8 @@ export function buildTierSaleTable(
   if (!base) return null;
 
   const baseCost = measured(market.basePrices[baseId]);
-  const dump = dumpFloorEx(market, baseId, baseCost);
+  const dumpInfo = dumpFloorInfo(market, baseId, baseCost);
+  const dump = dumpInfo.value;
   const c = market.currencyCosts;
   const alchOrbCost = measured(c.alchemy);
   const chaosCost = measured(c.chaos);
@@ -841,20 +919,43 @@ export function buildTierSaleTable(
     B: [],
     Trash: [],
   };
+  const measuredSaleSources: Record<RareTier, PriceSource[]> = {
+    S: [],
+    A: [],
+    B: [],
+    Trash: [],
+  };
 
   const { globalMeasuredProb, globalProb } = accumulateMeasuredPairSales(
     baseId,
     market,
-    (tier, _prob, sale) => {
+    (tier, _prob, sale, source) => {
       measuredSales[tier].push(sale);
+      measuredSaleSources[tier].push(source);
     },
     opts,
   );
+
+  // Same-side / multi / solo-B samples → tier measured sales (alongside 1p1s)
+  for (const sample of market.measuredAffixSamples ?? []) {
+    if (sample.baseId !== baseId) continue;
+    if (!Number.isFinite(sample.sellEx) || sample.sellEx <= 0) continue;
+    if (!sample.modIds?.length) continue;
+    const tier = modsToRareTier(sample.modIds, baseId);
+    measuredSales[tier].push(sample.sellEx);
+    measuredSaleSources[tier].push("measured");
+  }
 
   const measuredFrac =
     globalProb > 0 ? Math.min(1, globalMeasuredProb / globalProb) : 0;
 
   const uncorrupted = priceTiersFromMeasured(measuredSales, dump);
+  const uncorruptedSource = priceTierSourcesFromMeasured(
+    measuredSales,
+    measuredSaleSources,
+    dump,
+    dumpInfo.source,
+  );
 
   // Corrupt book unmeasured — haircut uncorrupted (same structure, still underest)
   const CORRUPT_MULT = 0.85;
@@ -916,6 +1017,8 @@ export function buildTierSaleTable(
     vaalCost,
     baseCost,
     dumpFloor: dump,
+    dumpFloorSource: dumpInfo.source,
+    uncorruptedSource,
   };
 }
 

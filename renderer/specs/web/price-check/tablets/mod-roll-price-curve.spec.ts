@@ -4,6 +4,7 @@ import {
   expectedSellFromCurve,
   fitExponentialRollCurve,
   priceAtRoll,
+  rollSampleProngs,
 } from "@/web/price-check/tablets/mod-roll-price-curve";
 import {
   TEMPLE_CRYSTAL_ROLL_ANCHORS,
@@ -11,6 +12,10 @@ import {
 } from "@/web/price-check/tablets/temple-manual-market";
 
 describe("mod-roll-price-curve", () => {
+  it("rollSampleProngs for crystal [5,10] is lo/mid/hi", () => {
+    expect(rollSampleProngs(5, 10)).toEqual([5, 7, 10]);
+  });
+
   it("fits exp from measured anchors without inventing a mid", () => {
     const fit = fitExponentialRollCurve([
       { roll: 5, sellEx: 100 },

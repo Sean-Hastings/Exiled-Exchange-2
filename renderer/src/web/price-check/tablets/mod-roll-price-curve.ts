@@ -35,6 +35,25 @@ export function discreteRolls(minValue: number, maxValue: number): number[] {
 }
 
 /**
+ * Sample prongs for live S-tier roll-curve measurement: lo / mid / hi.
+ * Mid = rolls[floor((n-1)/2)]. Crystal [5,10] → 5,7,10.
+ * If n≤2 return all rolls; if n=1 return [that].
+ */
+export function rollSampleProngs(minValue: number, maxValue: number): number[] {
+  const rolls = discreteRolls(minValue, maxValue);
+  if (rolls.length <= 2) return rolls;
+  const lo = rolls[0]!;
+  const hi = rolls[rolls.length - 1]!;
+  const mid = rolls[Math.floor((rolls.length - 1) / 2)]!;
+  return [lo, mid, hi];
+}
+
+/** Cache key for a per-base live mod roll curve. */
+export function modRollCurveKey(baseId: string, modId: string): string {
+  return `${baseId}/${modId}`;
+}
+
+/**
  * Log-linear least squares: ln(p) = ln(A) + k·v.
  * Requires ≥2 anchors with sellEx > 0.
  */

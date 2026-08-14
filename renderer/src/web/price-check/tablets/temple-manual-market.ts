@@ -1,9 +1,11 @@
 import { TABLET_BASES, TABLET_MOD_WEIGHTS } from "./mod-weights";
 import {
   buildModRollPriceCurve,
+  modRollCurveKey,
   type ModRollPriceCurve,
 } from "./mod-roll-price-curve";
 import type { MarketPriceCache } from "./tablet-ev-calculator";
+import type { PriceSource } from "./market-sanity";
 
 /**
  * Manual Temple (Vaal) trade survey — SC, 2026-08-12.
@@ -47,9 +49,15 @@ export const TEMPLE_MANUAL_SURVEY = {
   crystalModId: "temple_crystal_t1",
 } as const;
 
+function isMissingSell(n: number | undefined | null): boolean {
+  return n == null || !Number.isFinite(n);
+}
+
 /**
- * Overlay Temple dump/combo sale samples onto a market cache.
+ * Seed Temple dump/combo sale samples onto a market cache when keys are empty.
+ * Never overwrites finite live (or prior) sells — survey fills gaps only.
  * Does not invent blank base cost — preserves measured basePrices or NaN.
+ * If a live crystal roll curve exists, empty keys get its E[p] + measured stamp.
  */
 export function applyTempleManualSurveyMarket(
   market: MarketPriceCache,
@@ -59,44 +67,80 @@ export function applyTempleManualSurveyMarket(
 
   const { baseId, dumpEx, midBandEx, crystalModId } = TEMPLE_MANUAL_SURVEY;
 
-  const crystalCurve = templeCrystalRollCurve();
+  const liveCrystal =
+    market.modRollCurves?.[modRollCurveKey(baseId, crystalModId)];
+  const crystalCurve = liveCrystal ?? templeCrystalRollCurve();
   const crystalEx = crystalCurve?.expectedSellEx ?? Number.NaN;
+  const crystalSource: PriceSource = liveCrystal
+    ? "measured"
+    : "manual-survey";
 
   const modValueMap = { ...market.modValueMap };
+  const modValueSources: Record<string, PriceSource> = {
+    ...market.priceSource?.modValueMap,
+  };
 
-  const idSet = new Set([
-    ...base.allowedPrefixPool,
-    ...base.allowedSuffixPool,
-  ]);
-  for (const key of Object.keys(modValueMap)) {
-    const [p, s] = key.split("+");
-    if (idSet.has(p) && idSet.has(s)) delete modValueMap[key];
-  }
+  const stampIfEmpty = (key: string, value: number, source: PriceSource) => {
+    if (!Number.isFinite(value)) return;
+    if (!isMissingSell(modValueMap[key])) return;
+    modValueMap[key] = value;
+    modValueSources[key] = source;
+  };
 
   // Crystal jackpot: EV uses E[p(roll)]; support mods add no lift
   if (Number.isFinite(crystalEx)) {
     for (const pId of base.allowedPrefixPool) {
-      modValueMap[`${pId}+${crystalModId}`] = crystalEx;
+      stampIfEmpty(`${pId}+${crystalModId}`, crystalEx, crystalSource);
     }
   }
 
-  modValueMap[`map_pack_size_t2+map_rarity_t1`] = midBandEx;
-  modValueMap[`map_pack_size_t2+temple_beacon_pack_t1`] = midBandEx;
-  modValueMap[`map_pack_size_t2+temple_chest_rare_t1`] = midBandEx;
-  modValueMap[`junk_monster_eff_t1+map_pack_size_t2`] = midBandEx;
-  modValueMap[`junk_gold_t1+map_rarity_t1`] = midBandEx;
-  modValueMap[`junk_xp_t1+junk_extra_shrine_t1`] = dumpEx;
-  modValueMap[`junk_gold_t1+junk_extra_strongbox_t1`] = dumpEx;
+  stampIfEmpty(`map_pack_size_t2+map_rarity_t1`, midBandEx, "manual-survey");
+  stampIfEmpty(
+    `map_pack_size_t2+temple_beacon_pack_t1`,
+    midBandEx,
+    "manual-survey",
+  );
+  stampIfEmpty(
+    `map_pack_size_t2+temple_chest_rare_t1`,
+    midBandEx,
+    "manual-survey",
+  );
+  stampIfEmpty(
+    `junk_monster_eff_t1+map_pack_size_t2`,
+    midBandEx,
+    "manual-survey",
+  );
+  stampIfEmpty(`junk_gold_t1+map_rarity_t1`, midBandEx, "manual-survey");
+  stampIfEmpty(
+    `junk_xp_t1+junk_extra_shrine_t1`,
+    dumpEx,
+    "manual-survey",
+  );
+  stampIfEmpty(
+    `junk_gold_t1+junk_extra_strongbox_t1`,
+    dumpEx,
+    "manual-survey",
+  );
+
+  const junkSellByBase = { ...market.junkSellByBase };
+  const junkSources: Record<string, PriceSource> = {
+    ...market.priceSource?.junkSellByBase,
+  };
+  if (isMissingSell(junkSellByBase[baseId])) {
+    junkSellByBase[baseId] = dumpEx;
+    junkSources[baseId] = "manual-survey";
+  }
 
   return {
     ...market,
     // Keep live/NaN blank buy — never force a survey default
     basePrices: { ...market.basePrices },
-    junkSellByBase: {
-      ...market.junkSellByBase,
-      [baseId]: dumpEx,
-    },
+    junkSellByBase,
     modValueMap,
+    priceSource: {
+      junkSellByBase: junkSources,
+      modValueMap: modValueSources,
+    },
     // Leave listing anchors as measured (or NaN); don't invent bands
     listingAnchors: market.listingAnchors ?? {
       tradeDivine: Number.NaN,

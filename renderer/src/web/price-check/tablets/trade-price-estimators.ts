@@ -20,12 +20,29 @@ export const SELL_THIN_BOOK = 6;
 export const HOT_MARKET_UNDERCUT = 1 - SELL_UNDERCUT_PCT;
 
 /**
- * Re-query delay for hot vs cold flow detection. Multi-base sync weaves other
- * bases' first snapshots into this wait so it is not pure idle time.
+ * Wall-clock gap between Instant Buyout probe#1 and probe#2 for flow detection.
+ * Sync bookends other trade work (junk/combo sells) between snaps; if that
+ * middle work finishes early, idle-wait the remainder so the gap ≈ this value.
+ * Gap duration is detection-only — never scales classify / mean-of-B math.
  */
 export const FLOW_PROBE_MS = 45_000;
 /** New listings below ceiling on re-query → treat as hot. */
 export const FLOW_PROBE_MIN_NEW = 2;
+/** Sync skips remainder sleeps at or below this (not worth a wait tick). */
+export const FLOW_PROBE_WAIT_SKIP_MS = 500;
+
+/**
+ * Remaining idle ms before probe#2 so wall-clock (now − snap1) ≈ flowProbeMs.
+ * Returns 0 when middle work already burned the detection window.
+ * Callers skip sleep when the result is ≤ {@link FLOW_PROBE_WAIT_SKIP_MS}.
+ */
+export function remainingFlowProbeWaitMs(
+  snap1FetchedAt: number,
+  now: number,
+  flowProbeMs: number,
+): number {
+  return Math.max(0, flowProbeMs - (now - snap1FetchedAt));
+}
 
 export const BUY_DUST_FLOOR_EX = 5;
 export const BUY_MAX_EX = 25_000;

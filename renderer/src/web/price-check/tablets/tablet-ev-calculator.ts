@@ -15,9 +15,16 @@ import {
   type RareDispositionStrategy,
 } from "./strat-types";
 import type { ParsedTabletItem, ParsedTabletMod } from "./tablet-types";
-import { dumpFloorEx, JUNK_DUMP_FRACTION } from "./market-sanity";
+import {
+  dumpFloorEx,
+  dumpFloorInfo,
+  JUNK_DUMP_FRACTION,
+  type MarketPriceSource,
+  type PriceSource,
+} from "./market-sanity";
 import { estimateTabletSellPrice } from "./tablet-sell-estimate";
 import type { TabletSellBasis } from "./tablet-sell-estimate";
+import type { ModRollPriceCurve } from "./mod-roll-price-curve";
 import {
   defaultPolicy,
   expectedUnderDist,
@@ -31,7 +38,7 @@ import {
   type RareTier,
 } from "./tablet-mdp";
 
-export { dumpFloorEx, JUNK_DUMP_FRACTION };
+export { dumpFloorEx, dumpFloorInfo, JUNK_DUMP_FRACTION };
 
 export interface MarketPriceCache {
   basePrices: Record<string, number>;
@@ -57,6 +64,20 @@ export interface MarketPriceCache {
    * the long tail as worth 0ex (which makes EV ≈ −baseCost).
    */
   junkSellByBase?: Record<string, number>;
+  /**
+   * Same-side / multi-affix / solo-B sell samples (not stamped onto 1p1s grid).
+   * Fed into {@link buildTierSaleTable} via modsToRareTier.
+   */
+  measuredAffixSamples?: Array<{
+    baseId: string;
+    modIds: string[];
+    sellEx: number;
+  }>;
+  /**
+   * Live S-tier roll→price curves keyed by {@link modRollCurveKey} (`baseId/modId`).
+   * EV expand uses `expectedSellEx` (mean over discrete rolls), not a single prong.
+   */
+  modRollCurves?: Record<string, ModRollPriceCurve>;
   /** Listing anchors in exalted — NaN until measured (no invented bands) */
   listingAnchors?: {
     tradeDivine: number;
@@ -69,6 +90,11 @@ export interface MarketPriceCache {
     exaltPerChaos: number;
     exaltPerDivine: number;
   };
+  /**
+   * Provenance for dump/combo values. Missing key ⇒ treat as live measured.
+   * Fallback sources (survey / 20% blank / cascaded) must be marked in UI.
+   */
+  priceSource?: MarketPriceSource;
 }
 
 /** @deprecated Prefer blankStrategy + rareStrategy */
@@ -99,6 +125,7 @@ export interface OutcomeSlice {
   avgValueEx: number;
   /** Revenue contribution = prob × avgValueEx */
   revenueEx: number;
+  priceSource?: PriceSource;
 }
 
 export interface StrategyBreakdown {
@@ -111,6 +138,7 @@ export interface StrategyBreakdown {
   netEV: number;
   outcomes: OutcomeSlice[];
   note?: string;
+  priceSource?: PriceSource;
 }
 
 export interface BaseStrategyExplain {
@@ -118,6 +146,7 @@ export interface BaseStrategyExplain {
   baseName: string;
   baseCost: number;
   dumpFloorEx: number;
+  dumpFloorSource: PriceSource;
   /** Live-combo coverage fraction (diagnostic; not used to blend sales) */
   measuredFrac: number;
   /** One alchemy-rare roll: trash/hit/jackpot over the affix joint */
@@ -162,6 +191,7 @@ export interface TabletItemEvaluation {
   rareTier: RareTier;
   sellBasis: TabletSellBasis;
   sellDetail: string;
+  sellPriceSource: PriceSource;
   action: TabletAction;
   explanation: string;
   baseEV: TabletEVResult;
@@ -278,9 +308,28 @@ export class TabletEVEngine {
         ...this.marketCache.junkSellByBase,
         ...cache.junkSellByBase,
       },
+      measuredAffixSamples: cache.measuredAffixSamples
+        ? [...cache.measuredAffixSamples]
+        : this.marketCache.measuredAffixSamples
+          ? [...this.marketCache.measuredAffixSamples]
+          : undefined,
+      modRollCurves: {
+        ...this.marketCache.modRollCurves,
+        ...cache.modRollCurves,
+      },
       listingAnchors: {
         ...anchors(this.marketCache),
         ...cache.listingAnchors,
+      },
+      priceSource: {
+        junkSellByBase: {
+          ...this.marketCache.priceSource?.junkSellByBase,
+          ...cache.priceSource?.junkSellByBase,
+        },
+        modValueMap: {
+          ...this.marketCache.priceSource?.modValueMap,
+          ...cache.priceSource?.modValueMap,
+        },
       },
     };
   }
@@ -480,6 +529,7 @@ export class TabletEVEngine {
         baseName: baseId,
         baseCost: Number.NaN,
         dumpFloorEx: Number.NaN,
+        dumpFloorSource: "measured",
         measuredFrac: 0,
         rollOutcomes: [],
         expectedRollRevenueEx: Number.NaN,
@@ -490,7 +540,8 @@ export class TabletEVEngine {
     }
 
     const baseCost = measured(this.marketCache.basePrices[baseId]);
-    const dump = dumpFloorEx(this.marketCache, baseId, baseCost);
+    const dumpInfo = dumpFloorInfo(this.marketCache, baseId, baseCost);
+    const dump = dumpInfo.value;
     const recommended = recommendPolicy(
       this.marketCache,
       baseId,
@@ -517,6 +568,7 @@ export class TabletEVEngine {
             prob,
             avgValueEx,
             revenueEx: prob * avgValueEx,
+            priceSource: sales.uncorruptedSource[tier],
           };
         }).filter((o) => o.prob > 1e-9)
       : [];
@@ -572,6 +624,7 @@ export class TabletEVEngine {
                 prob: dist[tier],
                 avgValueEx: hit.sales.uncorrupted[tier],
                 revenueEx: dist[tier] * hit.sales.uncorrupted[tier],
+                priceSource: hit.sales.uncorruptedSource[tier],
               };
             }).filter((o) => o.prob > 1e-9);
       const orb =
@@ -644,6 +697,7 @@ export class TabletEVEngine {
           costEx: 0,
           netEV: marg,
           outcomes,
+          priceSource: recommended.sales.uncorruptedSource[tier],
           note:
             `${tier} sell-as-is ${Number.isFinite(list) ? list.toFixed(0) : "n/a"}ex` +
             ` · best ${best}` +
@@ -660,6 +714,7 @@ export class TabletEVEngine {
       baseName: base.name,
       baseCost,
       dumpFloorEx: dump,
+      dumpFloorSource: dumpInfo.source,
       measuredFrac,
       rollOutcomes,
       expectedRollRevenueEx,
@@ -678,7 +733,8 @@ export class TabletEVEngine {
     if (!base) return { slices: [], expectedRevenue: Number.NaN };
 
     const baseCost = measured(this.marketCache.basePrices[baseId]);
-    const dump = dumpFloorEx(this.marketCache, baseId, baseCost);
+    const dumpInfo = dumpFloorInfo(this.marketCache, baseId, baseCost);
+    const dump = dumpInfo.value;
     const div = measured(this.marketCache.fx?.exaltPerDivine);
     const jackpotFloor = Number.isFinite(div)
       ? Math.max(div * 0.5, Number.isFinite(dump) ? dump * 8 : 0)
@@ -697,11 +753,11 @@ export class TabletEVEngine {
 
     const acc: Record<
       OutcomeKind,
-      { prob: number; valueMass: number }
+      { prob: number; valueMass: number; usedDump: boolean; usedSurvey: boolean }
     > = {
-      jackpot: { prob: 0, valueMass: 0 },
-      hit: { prob: 0, valueMass: 0 },
-      trash: { prob: 0, valueMass: 0 },
+      jackpot: { prob: 0, valueMass: 0, usedDump: false, usedSurvey: false },
+      hit: { prob: 0, valueMass: 0, usedDump: false, usedSurvey: false },
+      trash: { prob: 0, valueMass: 0, usedDump: false, usedSurvey: false },
     };
 
     if (totalPrefixWeight > 0 && totalSuffixWeight > 0) {
@@ -738,6 +794,14 @@ export class TabletEVEngine {
           }
           acc[kind].prob += comboProb;
           acc[kind].valueMass += comboProb * sale;
+          if (!Number.isFinite(measuredSale)) acc[kind].usedDump = true;
+          else if (
+            this.marketCache.priceSource?.modValueMap?.[
+              comboKey(pId, sId)
+            ] === "manual-survey"
+          ) {
+            acc[kind].usedSurvey = true;
+          }
         }
       }
     }
@@ -754,14 +818,23 @@ export class TabletEVEngine {
       ["jackpot", "hit", "trash"] as OutcomeKind[]
     )
       .map((kind) => {
-        const { prob, valueMass } = acc[kind];
+        const { prob, valueMass, usedDump, usedSurvey } = acc[kind];
         const avgValueEx = prob > 0 ? valueMass / prob : 0;
+        const priceSource: PriceSource = usedDump
+          ? dumpInfo.source === "fraction-of-base" ||
+            dumpInfo.source === "manual-survey"
+            ? dumpInfo.source
+            : "cascaded"
+          : usedSurvey
+            ? "manual-survey"
+            : "measured";
         return {
           kind,
           label: labels[kind],
           prob,
           avgValueEx,
           revenueEx: valueMass,
+          priceSource,
         };
       })
       .filter((s) => s.prob > 0 || s.revenueEx > 0);
@@ -893,7 +966,12 @@ export class TabletEVEngine {
     const pack = (
       partial: Omit<
         TabletItemEvaluation,
-        "currentMarketPrice" | "rareTier" | "sellBasis" | "sellDetail" | "baseEV"
+        | "currentMarketPrice"
+        | "rareTier"
+        | "sellBasis"
+        | "sellDetail"
+        | "sellPriceSource"
+        | "baseEV"
       >,
     ): TabletItemEvaluation => ({
       ...partial,
@@ -901,6 +979,7 @@ export class TabletEVEngine {
       rareTier: sell.rareTier,
       sellBasis: sell.basis,
       sellDetail: sell.detail,
+      sellPriceSource: sell.priceSource,
       baseEV,
     });
 

@@ -160,7 +160,7 @@ function savePersisted(
   }
 }
 
-/** Persist + keep Temple manual survey sales authoritative. */
+/** Persist; Temple survey seeds NaN/missing sales only (never clobbers live). */
 function commitMarket(
   market: MarketPriceCache,
   updatedAt: number,
@@ -183,16 +183,17 @@ function hydrateFromStorage(): {
       status: {
         state: "ready",
         updatedAt: Date.now(),
-        source: "temple manual survey (no trade cache yet)",
+        source: "temple survey gaps (no trade cache yet)",
       },
     };
   }
   return {
+    // Fill-only: live finite Temple sells from cache are preserved
     market: applyTempleManualSurveyMarket(hit.market),
     status: {
       state: "ready",
       updatedAt: hit.updatedAt,
-      source: `${hit.source} + temple manual survey`,
+      source: `${hit.source} + temple survey(gaps)`,
     },
   };
 }
@@ -249,7 +250,8 @@ export async function ensureTabletMarketSynced(
       const buyCountB =
         opts?.buyCountB ?? opts?.coldBuyDepth ?? tabletBuyCountB.value;
       const result = await syncTabletMarketFromTrade({
-        combosPerBase: 8,
+        // SAB closed worklist safety max (was success-cap 8/16 under junk×premium)
+        combosPerBase: 40,
         baseIds,
         seedMarket: partial ? tabletMarketCache.value : undefined,
         buyCountB,
@@ -277,7 +279,7 @@ export async function ensureTabletMarketSynced(
           ? commitMarket(
               result.market,
               result.status.updatedAt,
-              `${result.status.source} + temple manual survey`,
+              `${result.status.source} + temple survey(gaps)`,
             )
           : applyTempleManualSurveyMarket(result.market);
       tabletMarketCache.value = stamped;
@@ -285,7 +287,7 @@ export async function ensureTabletMarketSynced(
         result.status.state === "ready"
           ? {
               ...result.status,
-              source: `${result.status.source} + temple manual survey`,
+              source: `${result.status.source} + temple survey(gaps)`,
             }
           : result.status;
       if (result.debug) {
@@ -301,7 +303,7 @@ export async function ensureTabletMarketSynced(
         tabletMarketCache.value = commitMarket(
           result.market,
           Date.now(),
-          `${result.status.message} + temple manual survey`,
+          `${result.status.message} + temple survey(gaps)`,
         );
       }
     } catch (e) {

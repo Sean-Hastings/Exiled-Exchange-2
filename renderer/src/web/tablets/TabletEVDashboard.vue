@@ -41,7 +41,7 @@
         </button>
         <label
           class="flex items-center gap-1 text-xs text-gray-400 px-1"
-          title="Buy count B: blank unit cost = mean of the cheapest B asks (hot→min(B,10), warm→min(B,25), cold→B). Intentional design change vs older Nth+35% mid-book — blank costs and EV shifted by design."
+          title="Buy count B: blank unit cost = mean of the cheapest B Instant Buyout asks (hot→min(B,10), warm→min(B,25), cold→B). Sync prefers in-game marketplace (securable); falls back to mixed available only if mkt is thin."
         >
           Buy B
           <input
@@ -57,9 +57,9 @@
         </label>
         <span
           class="text-[10px] text-gray-500 max-w-[14rem] leading-tight"
-          title="Ship note: blank unit cost is mean of cheapest B asks (regime-capped). Not the legacy mid-book / ~35% path."
+          title="Ship note: blank unit cost is mean of cheapest B Instant Buyout asks (regime-capped). Marketplace-first sync; not whisper/trade-site-only."
         >
-          Blank cost = mean@B (by design)
+          Blank cost = mean@B (mkt-first)
         </span>
         <label
           class="flex items-center gap-1 text-xs text-gray-400 px-1"
@@ -277,7 +277,14 @@
               <b class="text-white">{{ fmtEx(selectedExplain.expectedRollRevenueEx) }}</b>ex
             </span>
             <span>
-              dump {{ fmtEx(selectedExplain.dumpFloorEx, 0) }}ex · base
+              dump
+              <FallbackEx
+                :value="selectedExplain.dumpFloorEx"
+                :source="selectedExplain.dumpFloorSource"
+                :digits="0"
+                suffix="ex"
+              />
+              · base
               {{ fmtEx(selectedExplain.baseCost, 0) }}ex · measured
               {{ ((selectedExplain.measuredFrac || 0) * 100).toFixed(0) }}%
             </span>
@@ -306,7 +313,9 @@
                   >
                     <td class="px-1">{{ o.label }}</td>
                     <td class="px-1 text-right">{{ pct(o.prob) }}</td>
-                    <td class="px-1 text-right">{{ fmtEx(o.avgValueEx, 0) }}</td>
+                    <td class="px-1 text-right">
+                      <FallbackEx :value="o.avgValueEx" :source="o.priceSource" :digits="0" />
+                    </td>
                     <td class="px-1 text-right">{{ fmtEx(o.revenueEx, 1) }}</td>
                   </tr>
                 </tbody>
@@ -373,7 +382,9 @@
                     >
                       <td class="px-2 py-0.5">{{ o.label }}</td>
                       <td class="px-1 text-right w-14">{{ pct(o.prob) }}</td>
-                      <td class="px-1 text-right w-16">{{ fmtEx(o.avgValueEx, 0) }}</td>
+                      <td class="px-1 text-right w-16">
+                        <FallbackEx :value="o.avgValueEx" :source="o.priceSource" :digits="0" />
+                      </td>
                       <td class="px-1 text-right w-16">{{ fmtEx(o.revenueEx, 1) }}</td>
                     </tr>
                   </tbody>
@@ -394,7 +405,13 @@
                   <span class="text-amber-300">{{ s.strategy }}</span>
                   <span>
                     list
-                    <b class="text-white">{{ fmtEx(s.expectedRevenueEx) }}</b>
+                    <b class="text-white">
+                      <FallbackEx
+                        :value="s.expectedRevenueEx"
+                        :source="s.priceSource"
+                        :digits="2"
+                      />
+                    </b>
                     · ΔEV
                     <span :class="s.netEV > 0 ? 'text-green-300' : 'text-red-300'">
                       {{ s.netEV > 0 ? "+" : "" }}{{ fmtEx(s.netEV) }}
@@ -645,6 +662,7 @@ import {
 } from "@/web/price-check/tablets";
 import { hydrateRollSeenFromRepo } from "@/web/price-check/tablets/tablet-roll-seen-host-bridge";
 import { TABLET_BASES } from "@/web/price-check/tablets/mod-weights";
+import FallbackEx from "@/web/price-check/tablets/FallbackEx.vue";
 
 const props = defineProps<{
   config: TabletEVWidget;

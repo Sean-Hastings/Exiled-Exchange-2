@@ -277,7 +277,7 @@ export async function ensureTabletMarketSynced(
         // SAB closed worklist safety max (was success-cap 8/16 under junk×premium)
         combosPerBase: 40,
         baseIds,
-        seedMarket: partial ? tabletMarketCache.value : undefined,
+        seedMarket: tabletMarketCache.value,
         buyCountB,
         coldBuyDepth: buyCountB,
         flowProbeMs: opts?.flowProbeMs,
@@ -291,6 +291,27 @@ export async function ensureTabletMarketSynced(
             state: "loading",
             detail: `r${MARKET_SYNC_REVISION}: ${detail}`,
           };
+        },
+        onPartialMarket: (cloned, debug) => {
+          if (gen !== syncGeneration) return;
+          tabletMarketCache.value = commitMarket(
+            cloned,
+            Date.now(),
+            `r${MARKET_SYNC_REVISION} live (refreshing)`,
+          );
+          if (debug) {
+            const touched = [
+              ...new Set([
+                ...debug.bases.map((b) => b.baseId),
+                ...debug.combos.map((c) => c.baseId),
+              ]),
+            ];
+            tabletMarketDebug.value = mergeMarketSyncDebug(
+              tabletMarketDebug.value,
+              debug,
+              touched,
+            );
+          }
         },
       });
       if (gen !== syncGeneration) return;

@@ -124,6 +124,12 @@ export async function startServer(
       name: "MAIN->CLIENT::log-entry",
       payload: { message: logger.history },
     });
+    sendEventTo("last-active", {
+      name: "MAIN->CLIENT::tablet-market-sync",
+      payload: undefined,
+    });
+    logger.write("info tablet market sync requested (server start / client connect)");
+    console.log("tablet market sync requested (client connected)");
   });
 
   server.addListener("request", async (req, res) => {

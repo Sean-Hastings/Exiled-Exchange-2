@@ -49,6 +49,12 @@
           </template>
         </ui-popover>
       </div>
+      <div
+        v-if="marketSyncLine"
+        class="text-xs text-sky-200 px-2 pb-1 max-w-xl leading-snug"
+      >
+        {{ marketSyncLine }}
+      </div>
       <div v-if="isEditing" class="text-gray-100 px-2 pb-1 whitespace-nowrap">
         <ui-toggle v-model="config.alwaysShow">{{
           t(":always_show")
@@ -81,6 +87,7 @@ import { registry } from "./widget-registry";
 import { Host } from "@/web/background/IPC";
 import Widget from "./Widget.vue";
 import { useI18nNs } from "@/web/i18n";
+import { tabletMarketStatus } from "@/web/price-check/tablets/tablet-market-store";
 
 export default defineComponent({
   widget: {
@@ -140,6 +147,12 @@ export default defineComponent({
     return {
       t,
       widgets,
+      marketSyncLine: computed(() => {
+        const s = tabletMarketStatus.value;
+        if (s.state === "loading") return s.detail;
+        if (s.state === "error") return s.message;
+        return "";
+      }),
       instantiableWidgets: computed(() => {
         return registry.widgets
           .filter(({ widget }) => widget.instances === "multi")

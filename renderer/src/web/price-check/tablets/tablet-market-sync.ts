@@ -99,6 +99,29 @@ function resolveTabletLeagueId(): string | undefined {
   return leagues.selectedId.value;
 }
 
+/** Server-start sync can race OverlayWindow's league fetch — wait, then load. */
+async function ensureTabletLeagueId(
+  progress: ProgressFn,
+  isCancelled: () => boolean,
+): Promise<string | undefined> {
+  const leagues = useLeagues();
+  if (!leagues.list.value.length) {
+    progress("Loading trade leagues…");
+    for (
+      let i = 0;
+      i < 50 && leagues.isLoading.value && !leagues.list.value.length;
+      i++
+    ) {
+      if (isCancelled()) return undefined;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    if (!leagues.list.value.length) {
+      await leagues.load();
+    }
+  }
+  return resolveTabletLeagueId();
+}
+
 export type MarketSyncStatus =
   | { state: "idle" }
   | { state: "loading"; detail: string }
@@ -902,7 +925,7 @@ export interface MarketSyncResult {
   debug?: MarketSyncDebug;
 }
 
-function cloneMarketCache(src: MarketPriceCache): MarketPriceCache {
+export function cloneMarketCache(src: MarketPriceCache): MarketPriceCache {
   return {
     basePrices: { ...src.basePrices },
     currencyCosts: { ...src.currencyCosts },
@@ -943,9 +966,29 @@ function cloneMarketCache(src: MarketPriceCache): MarketPriceCache {
   };
 }
 
-/** Wipe measured prices for one base so a partial refresh cannot leave stale combos. */
-function clearBaseMarketSlice(market: MarketPriceCache, baseId: string) {
+const SOLO_MOD_KEY_PREFIX = "__solo__:";
+
+/** Combo keys owned by this base: `__solo__:id`, `p+s`, or 3+ `id+id+…`. */
+function comboKeyBelongsToBase(key: string, ids: Set<string>): boolean {
+  if (key.startsWith(SOLO_MOD_KEY_PREFIX)) {
+    const id = key.slice(SOLO_MOD_KEY_PREFIX.length);
+    return id.length > 0 && ids.has(id);
+  }
+  const parts = key.split("+");
+  if (!parts.length || parts.some((p) => !p)) return false;
+  return parts.every((p) => ids.has(p));
+}
+
+/** Wipe blank buy only — keep last-refresh sells until junk+SAB replaces them. */
+export function clearBaseBuySlice(market: MarketPriceCache, baseId: string) {
   market.basePrices[baseId] = Number.NaN;
+}
+
+/**
+ * Wipe measured sells for one base (junk, combos, samples, roll curves).
+ * Leaves blank buy and other bases' unique keys intact.
+ */
+export function clearBaseSellSlice(market: MarketPriceCache, baseId: string) {
   if (market.junkSellByBase) delete market.junkSellByBase[baseId];
   if (market.priceSource?.junkSellByBase) {
     delete market.priceSource.junkSellByBase[baseId];
@@ -973,15 +1016,21 @@ function clearBaseMarketSlice(market: MarketPriceCache, baseId: string) {
     ...Object.keys(market.priceSource?.modValueMap ?? {}),
   ]);
   for (const key of keys) {
-    const parts = key.split("+");
-    if (parts.length !== 2) continue;
-    const [p, s] = parts;
-    if (!p || !s || !ids.has(p) || !ids.has(s)) continue;
+    if (!comboKeyBelongsToBase(key, ids)) continue;
     delete market.modValueMap[key];
     if (market.priceSource?.modValueMap) {
       delete market.priceSource.modValueMap[key];
     }
   }
+}
+
+/** Wipe buy + sells for one base. Prefer split helpers during a live sync. */
+export function clearBaseMarketSlice(
+  market: MarketPriceCache,
+  baseId: string,
+) {
+  clearBaseBuySlice(market, baseId);
+  clearBaseSellSlice(market, baseId);
 }
 
 function ensurePriceSource(market: MarketPriceCache) {
@@ -1024,6 +1073,14 @@ export async function syncTabletMarketFromTrade(opts?: {
   baseIds?: string[];
   /** Existing cache to merge into for partial refreshes. */
   seedMarket?: MarketPriceCache;
+  /**
+   * Called with a clone after each base's junk+SAB book is usable, and after
+   * each probe #2 / final blank commit. Caller must not mutate the clone.
+   */
+  onPartialMarket?: (
+    market: MarketPriceCache,
+    debug: MarketSyncDebug,
+  ) => void;
   onProgress?: (detail: string) => void;
   isCancelled?: () => boolean;
   /** Buy count B — mean of cheapest B for EV blank cost. */
@@ -1057,13 +1114,19 @@ export async function syncTabletMarketFromTrade(opts?: {
     ? new Set(opts.baseIds.filter((id) => !!TABLET_BASES[id]))
     : null;
 
-  const leagueId = resolveTabletLeagueId();
+  const leagueId = await ensureTabletLeagueId(progress, isCancelled);
   if (!leagueId) {
+    const leagues = useLeagues();
+    const why = leagues.error.value
+      ? ` (${leagues.error.value})`
+      : leagues.isLoading.value
+        ? " (still loading)"
+        : "";
     return {
       market: createEmptyMarketCache(),
       status: {
         state: "error",
-        message: "No softcore challenge league — prices unavailable (NaN)",
+        message: `No softcore challenge league — prices unavailable (NaN)${why}`,
         partial: false,
       },
       stats: { basesPriced: 0, combosPriced: 0, currenciesPriced: 0 },
@@ -1177,10 +1240,9 @@ export async function syncTabletMarketFromTrade(opts?: {
     };
   }
 
-  // Drop stale measurements for bases we're about to re-price
-  for (const base of bases) {
-    clearBaseMarketSlice(market, base.id);
-  }
+  const emitPartial = () => {
+    opts?.onPartialMarket?.(cloneMarketCache(market), makeDebug());
+  };
 
   try {
     type PendingBuy = {
@@ -1194,10 +1256,15 @@ export async function syncTabletMarketFromTrade(opts?: {
     const pendingBuys: PendingBuy[] = [];
 
     // ── Bookend flow probe ──────────────────────────────────────────────
-    // Probe#1 (first) → junk/combo middle work burns the gap → per-base
-    // remainder wait → Probe#2 (last). Wall-clock between snap1→snap2 is the
-    // detection window only; classifyMarketFlow / mean-of-B do not use gap ms.
-    // Variable gap: if middle work already took ≥ FLOW_PROBE_MS, skip idle wait.
+    // Probe#1 (all bases) → per-base junk+SAB middle work burns the gap →
+    // per-base remainder wait → Probe#2 (last). Wall-clock between snap1→snap2
+    // is the detection window only; classifyMarketFlow / mean-of-B do not use
+    // gap ms. Variable gap: if middle work already took ≥ FLOW_PROBE_MS, skip
+    // idle wait.
+    //
+    // Buy wipe is per-base at probe #1 (not an all-base clear). Sell wipe is
+    // deferred until that base's junk+SAB block so unfinished types keep last
+    // refresh sells. Do not publish the working market during probe #1.
     //
     // Provisional blank: junk/combo trade searches do not need blank prices,
     // but we still commit snap1 @ regime=unknown (warm depth) so basePrices
@@ -1213,6 +1280,7 @@ export async function syncTabletMarketFromTrade(opts?: {
         ? `Blank: ${base.name}`
         : `Blank ${baseIdx}/${bases.length}: ${base.name}`;
       progress(`${ctx} Flow probe #1…`);
+      clearBaseBuySlice(market, base.id);
 
       const typeNames = tradeTypeNamesForBase(base);
       const entry: BaseBuyDebugTrace = {
@@ -1320,37 +1388,8 @@ export async function syncTabletMarketFromTrade(opts?: {
       }
     }
 
-    // Middle work — burns the probe gap (junk sells + combo sells).
-    for (const pending of pendingBuys) {
-      if (isCancelled()) throw new Error("Market sync cancelled");
-      const { base, typeName } = pending;
-      const junkCtx = `Junk: ${base.name}`;
-      progress(junkCtx);
-      const { price: junkPrice, trace } = await searchSellPricePreferMarket(
-        (status) => junkTabletQuery(typeName, status),
-        leagueId,
-        fx,
-        progress,
-        junkCtx,
-        typeName,
-        isCancelled,
-        sellCeiling,
-        JUNK_LISTING_SAMPLE,
-        includeAvailable,
-      );
-      trace.kind = "sell-junk";
-      comboDebug.push({
-        baseId: base.id,
-        baseName: base.name,
-        comboKey: "__junk__",
-        finalSell: junkPrice,
-        search: trace,
-      });
-      if (junkPrice != null && isFinitePositive(junkPrice)) {
-        stampMeasuredJunk(market, base.id, junkPrice);
-      }
-    }
-
+    // Middle work — per-base junk + SAB after all probe #1 (not serial per-base).
+    const pendingByBase = new Map(pendingBuys.map((p) => [p.base.id, p]));
     let comboDone = 0;
     // Closed SAB sell worklist (S/A solos, SS/SA/AA duos, all-S 3/4; no SB)
     const plans = bases.map((base) => ({
@@ -1359,8 +1398,40 @@ export async function syncTabletMarketFromTrade(opts?: {
     }));
     const comboTotal = plans.reduce((n, p) => n + p.work.length, 0);
     for (const { base, work } of plans) {
-      const typeName = tradeTypeNamesForBase(base)[0];
+      clearBaseSellSlice(market, base.id);
 
+      const pending = pendingByBase.get(base.id);
+      if (pending) {
+        if (isCancelled()) throw new Error("Market sync cancelled");
+        const { typeName } = pending;
+        const junkCtx = `Junk: ${base.name}`;
+        progress(junkCtx);
+        const { price: junkPrice, trace } = await searchSellPricePreferMarket(
+          (status) => junkTabletQuery(typeName, status),
+          leagueId,
+          fx,
+          progress,
+          junkCtx,
+          typeName,
+          isCancelled,
+          sellCeiling,
+          JUNK_LISTING_SAMPLE,
+          includeAvailable,
+        );
+        trace.kind = "sell-junk";
+        comboDebug.push({
+          baseId: base.id,
+          baseName: base.name,
+          comboKey: "__junk__",
+          finalSell: junkPrice,
+          search: trace,
+        });
+        if (junkPrice != null && isFinitePositive(junkPrice)) {
+          stampMeasuredJunk(market, base.id, junkPrice);
+        }
+      }
+
+      const typeName = tradeTypeNamesForBase(base)[0];
       for (const item of work) {
         if (isCancelled()) throw new Error("Market sync cancelled");
         comboDone++;
@@ -1402,6 +1473,7 @@ export async function syncTabletMarketFromTrade(opts?: {
           stats.combosPriced++;
         }
       }
+      emitPartial();
     }
 
     // Phase 2 — per-base remainder wait (not oldest-global), then probe#2 + final blank.
@@ -1504,6 +1576,7 @@ export async function syncTabletMarketFromTrade(opts?: {
         );
       }
       baseDebug.push(entry);
+      emitPartial();
     }
   } catch (e) {
     return {

@@ -15,6 +15,18 @@
         </div>
       </div>
 
+      <div
+        v-if="syncBanner"
+        class="text-sm rounded px-2 py-1.5 leading-snug"
+        :class="
+          syncBanner.kind === 'loading'
+            ? 'bg-sky-900/70 border border-sky-400 text-sky-100'
+            : 'bg-red-900/70 border border-red-400 text-red-100'
+        "
+      >
+        {{ syncBanner.text }}
+      </div>
+
       <div class="flex flex-wrap gap-1 items-center">
         <button
           type="button"
@@ -643,7 +655,7 @@ export default {
 </script>
 
 <script setup lang="ts">
-import { computed, inject, onMounted, onUnmounted, ref } from "vue";
+import { computed, inject, onMounted, onUnmounted, ref, watch } from "vue";
 import Widget from "../overlay/Widget.vue";
 import BatchRiskPanel from "./BatchRiskPanel.vue";
 import RollSeenPanel from "./RollSeenPanel.vue";
@@ -696,7 +708,19 @@ if (props.config.wmFlags[0] === "uninitialized") {
   wm.show(props.config.wmId);
 }
 
-const isRefreshing = ref(false);
+const isRefreshing = computed(
+  () => tabletMarketStatus.value.state === "loading",
+);
+const syncBanner = computed(() => {
+  const s = tabletMarketStatus.value;
+  if (s.state === "loading") {
+    return { kind: "loading" as const, text: s.detail };
+  }
+  if (s.state === "error") {
+    return { kind: "error" as const, text: s.message };
+  }
+  return null;
+});
 /** Short name shown while a single-base refresh is in flight */
 const refreshScope = ref<string | null>(null);
 const buyCountB = tabletBuyCountB;
@@ -886,13 +910,11 @@ function onFitApplied() {
 
 async function refresh() {
   if (isRefreshing.value) return;
-  isRefreshing.value = true;
   refreshScope.value = null;
   try {
     await ensureTabletMarketSynced(true);
     recompute();
   } finally {
-    isRefreshing.value = false;
     refreshScope.value = null;
   }
 }
@@ -900,13 +922,11 @@ async function refresh() {
 async function refreshSelected() {
   if (isRefreshing.value || !selectedId.value) return;
   const name = selectedRow.value?.baseName ?? selectedId.value;
-  isRefreshing.value = true;
   refreshScope.value = shortBaseName(name);
   try {
     await ensureTabletMarketSynced(true, { baseIds: [selectedId.value] });
     recompute();
   } finally {
-    isRefreshing.value = false;
     refreshScope.value = null;
   }
 }
@@ -958,9 +978,13 @@ const hotkeyController = Host.onEvent("MAIN->CLIENT::widget-action", (e) => {
   }
 });
 
+watch(tabletMarketCache, () => recompute());
+watch(tabletMarketStatus, (s) => {
+  if (s.state === "ready") recompute();
+});
+
 onMounted(() => {
   void hydrateRollSeenFromRepo();
-  void refresh();
 });
 
 onUnmounted(() => {

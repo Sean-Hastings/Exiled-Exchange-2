@@ -78,6 +78,7 @@ import { usePoeninja } from "@/web/background/Prices";
 import { useLeagues } from "@/web/background/Leagues";
 import { useClientLog } from "@/web/client-log/client-log";
 import DevWidget from "./DevWidget.vue";
+import { tabletMarketStatus } from "@/web/price-check/tablets/tablet-market-store";
 
 type WMID = Widget["wmId"];
 
@@ -174,7 +175,15 @@ export default defineComponent({
           payload: { isOverlay: Host.isElectron },
         });
         pushHostConfig();
+        const tablet = widgets.value.find((w) => w.wmType === "tablet-ev");
+        if (tablet) show(tablet.wmId);
       });
+    });
+
+    watch(tabletMarketStatus, (s) => {
+      if (s.state !== "loading") return;
+      const tablet = widgets.value.find((w) => w.wmType === "tablet-ev");
+      if (tablet) show(tablet.wmId);
     });
 
     const size = (() => {

@@ -95,7 +95,8 @@ export type IpcEvent =
   | IpcWriteToFile
   | IpcReparseLog
   | IpcTabletTierSurveyRun
-  | IpcTabletTierSurveyUpdate;
+  | IpcTabletTierSurveyUpdate
+  | IpcTabletMarketSync;
 
 export type IpcEventPayload<
   Name extends IpcEvent["name"],
@@ -262,6 +263,9 @@ type IpcTabletTierSurveyUpdate = Event<
     survey?: unknown;
   }
 >;
+
+/** Main → overlay: force a full Instant Buyout tablet market refresh (trade cookies in renderer). */
+type IpcTabletMarketSync = Event<"MAIN->CLIENT::tablet-market-sync">;
 
 export type ClientLogEvent =
   | GeneralLogEvent

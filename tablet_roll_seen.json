@@ -41,11 +41,9 @@
       "baseId": "temple_tablet",
       "createdAt": 1786492800000,
       "updatedAt": 1786671071813,
-      "note": "Imported from manual_review_1.json craftSample/chaosSlamSample (2026-08-12). One-affix chaos; n≈32.5 (~30–35 range) stored as tablets=33, suffixTrials=33, prefixTrials=0, crystalHits=1.",
+      "note": "Imported from manual_review_1.json craftSample/chaosSlamSample (2026-08-12). One-affix chaos; n≈32.5 (~30–35) stored as tablets=33, affixesPerTablet=1. No explicit side budgets — default 50/50 prefix/suffix like alch/magic batches (chaos picks a random slot).",
       "affixesPerTablet": 1,
       "tablets": 33,
-      "prefixTrials": 0,
-      "suffixTrials": 33,
       "hits": [
         { "modId": "temple_crystal_t1", "hits": 1 }
       ]

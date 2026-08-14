@@ -9,12 +9,24 @@ export const BUY_DEPTH_HOT = 10;
 export const BUY_DEPTH_COLD_DEFAULT = 25;
 
 export const SELL_STALE_MS = 24 * 60 * 60 * 1000;
-/** Ignore listings older than this for the stale clearing anchor. */
-export const SELL_MAX_STALE_AGE_MS = 14 * 24 * 60 * 60 * 1000;
-/** Default undercut below the pack leader under the stale anchor. */
-export const SELL_UNDERCUT_PCT = 0.04;
-/** Thin-book undercut (clear faster). */
+/**
+ * @deprecated unused — Instant Buyout listings stay buyable offline.
+ * No 14-day ghost cap. Estimator default is Infinity.
+ */
+export const SELL_MAX_STALE_AGE_MS = Number.POSITIVE_INFINITY;
+/** Pack / no-24h window-max undercut (3%). */
+export const SELL_UNDERCUT_PCT = 0.03;
+/** Thin stale undercut when fewer than {@link SELL_THIN_PACK_BEFORE} sit under the 24h wall. */
 export const SELL_UNDERCUT_THIN_PCT = 0.1;
+/**
+ * Pack-below count at which we use 3% closest-under only.
+ * `below.length < 9` mixes in 10% off the stale anchor.
+ */
+export const SELL_THIN_PACK_BEFORE = 9;
+/**
+ * @deprecated obsolete for Instant Buyout sell — do not pick 3% vs 10% from total n.
+ * Kept for older call sites.
+ */
 export const SELL_THIN_BOOK = 6;
 /** @deprecated prefer SELL_UNDERCUT_PCT — kept for older call sites */
 export const HOT_MARKET_UNDERCUT = 1 - SELL_UNDERCUT_PCT;
@@ -356,31 +368,69 @@ export function classifyMarketFlow(
   return "cold";
 }
 
-/**
- * Sell: cheapest ≥24h listing is the stale anchor; undercut the highest ask
- * strictly below that anchor (the active pack). Thin books undercut harder.
- */
-export function estimateSellPriceEx(
-  listings: PricedListing[],
-  opts?: {
-    nowMs?: number;
-    staleMs?: number;
-    maxStaleAgeMs?: number;
-    undercutPct?: number;
-    thinUndercutPct?: number;
-    thinBook?: number;
-    /** @deprecated ignored — use undercutPct */
-    hotUndercut?: number;
-    ceilingEx?: number;
-  },
+export interface SellEstimate {
+  price: number | null;
+  note: string;
+}
+
+export type SellEstimateOpts = {
+  nowMs?: number;
+  staleMs?: number;
+  /** @deprecated unused — Instant Buyout has no 14-day ghost cap */
+  maxStaleAgeMs?: number;
+  undercutPct?: number;
+  thinUndercutPct?: number;
+  /** Pack-below count for 3%-only vs mix-in-10%-stale. Default {@link SELL_THIN_PACK_BEFORE}. */
+  thinPackBefore?: number;
+  /** @deprecated unused — estimator no longer uses total book size */
+  thinBook?: number;
+  /** @deprecated ignored — use undercutPct */
+  hotUndercut?: number;
+  ceilingEx?: number;
+};
+
+/** Age in ms; missing / unparsable `indexedAt` → fresh (not ≥24h). */
+export function listingAgeMs(
+  listing: PricedListing,
+  nowMs: number,
 ): number | null {
+  if (!listing.indexedAt) return null;
+  const t = Date.parse(listing.indexedAt);
+  if (!Number.isFinite(t)) return null;
+  return nowMs - t;
+}
+
+/** Kept Instant Buyout row sitting ≥24h. Missing indexedAt is fresh. */
+export function isSellListingStale(
+  listing: PricedListing,
+  nowMs = Date.now(),
+  staleMs = SELL_STALE_MS,
+): boolean {
+  const age = listingAgeMs(listing, nowMs);
+  return age != null && age >= staleMs;
+}
+
+/**
+ * Instant Buyout sell: SEARCH is price-asc; FETCH stops at the first kept ≥24h
+ * ask. No 14-day ghost cap (offline IB is still buyable). No total-n 3%/10% split.
+ *
+ * - Any ≥24h: cheapest such row is the stale wall.
+ *   Pack-below = strictly cheaper. Closest-under = highest of those.
+ *   `below.length >= 9` → 3% off closest-under only.
+ *   `below.length < 9` → max(3% closest-under if any, 10% stale). 0 below → 10% stale.
+ * - No ≥24h in the fetched window → 3% under the most expensive kept listing
+ *   (top of the cheapest-N window), not the cheapest.
+ */
+export function estimateSellPriceDetail(
+  listings: PricedListing[],
+  opts?: SellEstimateOpts,
+): SellEstimate {
   const nowMs = opts?.nowMs ?? Date.now();
   const staleMs = opts?.staleMs ?? SELL_STALE_MS;
-  const maxStaleAgeMs = opts?.maxStaleAgeMs ?? SELL_MAX_STALE_AGE_MS;
-  const thinBook = opts?.thinBook ?? SELL_THIN_BOOK;
   const ceilingEx = opts?.ceilingEx ?? SELL_MAX_EX;
   const undercutPct = opts?.undercutPct ?? SELL_UNDERCUT_PCT;
   const thinUndercutPct = opts?.thinUndercutPct ?? SELL_UNDERCUT_THIN_PCT;
+  const thinPackBefore = opts?.thinPackBefore ?? SELL_THIN_PACK_BEFORE;
 
   const priced = listings
     .filter(
@@ -389,35 +439,53 @@ export function estimateSellPriceEx(
     )
     .slice()
     .sort((a, b) => a.priceEx - b.priceEx);
-  if (!priced.length) return null;
+  if (!priced.length) return { price: null, note: "empty" };
 
-  const ageMs = (l: PricedListing): number | null => {
-    if (!l.indexedAt) return null;
-    const t = Date.parse(l.indexedAt);
-    if (!Number.isFinite(t)) return null;
-    return nowMs - t;
-  };
-
-  const pct =
-    priced.length < thinBook ? thinUndercutPct : undercutPct;
-  const applyUndercut = (ex: number) => ex * (1 - pct);
-
-  const stale = priced.filter((l) => {
-    const age = ageMs(l);
-    return age != null && age >= staleMs && age <= maxStaleAgeMs;
-  });
+  const stale = priced.filter((l) => isSellListingStale(l, nowMs, staleMs));
 
   if (stale.length) {
-    const anchor = stale[0]; // cheapest recently-stale
+    const anchor = stale[0]!;
     const below = priced.filter((l) => l.priceEx < anchor.priceEx - 1e-9);
-    if (below.length) {
-      const packLeader = below[below.length - 1];
-      return applyUndercut(packLeader.priceEx);
+    const closestUnder = below.length ? below[below.length - 1]! : null;
+    const packValue =
+      closestUnder != null ? closestUnder.priceEx * (1 - undercutPct) : null;
+    const staleValue = anchor.priceEx * (1 - thinUndercutPct);
+
+    if (below.length >= thinPackBefore) {
+      return {
+        price: packValue,
+        note: `3% closest-under (below=${below.length})`,
+      };
     }
-    // Nothing under the stale anchor — shave the anchor itself
-    return applyUndercut(anchor.priceEx);
+    if (packValue == null) {
+      return {
+        price: staleValue,
+        note: "10% stale-anchor (0 below)",
+      };
+    }
+    return {
+      price: Math.max(packValue, staleValue),
+      note: `max(3% pack, 10% stale) below=${below.length}`,
+    };
   }
 
-  // No usable stale: undercut live floor
-  return applyUndercut(priced[0].priceEx);
+  const windowMax = priced[priced.length - 1]!.priceEx;
+  return {
+    price: windowMax * (1 - undercutPct),
+    note: `3% window-max (n=${priced.length}, no 24h)`,
+  };
+}
+
+export function estimateSellPriceEx(
+  listings: PricedListing[],
+  opts?: SellEstimateOpts,
+): number | null {
+  return estimateSellPriceDetail(listings, opts).price;
+}
+
+export function sellEstimateNote(
+  listings: PricedListing[],
+  opts?: SellEstimateOpts,
+): string {
+  return estimateSellPriceDetail(listings, opts).note;
 }

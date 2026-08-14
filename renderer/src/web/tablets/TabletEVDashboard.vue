@@ -586,25 +586,61 @@
                 class="border border-gray-800 rounded mb-1"
               >
                 <div
-                  class="px-2 py-1 bg-gray-900 cursor-pointer"
+                  class="px-2 py-1 bg-gray-900 cursor-pointer flex flex-wrap gap-x-2"
                   @click="toggleCombo(ci)"
                 >
-                  {{ c.comboKey }} →
-                  <b class="text-white">{{ fmtEx(c.finalSell) }}ex</b>
-                  · kept {{ c.search.kept }}/{{ c.search.fetched }} ·
-                  {{ c.search.mix }}
+                  <span>{{ c.comboKey }}</span>
+                  <span>
+                    →
+                    <b class="text-white">{{ fmtEx(c.finalSell) }}ex</b>
+                    ({{ c.search.estimateNote }})
+                  </span>
+                  <span>
+                    · kept {{ c.search.kept }}/{{ c.search.fetched }} ·
+                    {{ c.search.mix }}
+                  </span>
                 </div>
-                <div v-if="expandedCombo === ci" class="overflow-auto max-h-40 px-1">
-                  <div
-                    v-for="(row, ri) in c.search.listings.slice(0, 30)"
-                    :key="ri"
-                    class="flex gap-2 border-t border-gray-900 py-0.5"
-                    :class="row.keep === 'ok' ? 'text-green-300' : 'text-gray-500'"
-                  >
-                    <span>{{ row.amount }} {{ row.currency }}</span>
-                    <span>→ {{ fmtEx(row.priceEx, 1) }}ex</span>
-                    <span>{{ row.keep }}</span>
-                  </div>
+                <div v-if="expandedCombo === ci" class="overflow-auto max-h-48">
+                  <table class="w-full text-left">
+                    <thead class="text-gray-500 sticky top-0 bg-gray-950">
+                      <tr>
+                        <th class="px-1">#</th>
+                        <th class="px-1">raw</th>
+                        <th class="px-1">ccy</th>
+                        <th class="px-1 text-right">ex</th>
+                        <th class="px-1">keep</th>
+                        <th class="px-1">who</th>
+                        <th class="px-1">age</th>
+                        <th class="px-1">indexed</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr
+                        v-for="(row, ri) in c.search.listings"
+                        :key="ri"
+                        class="border-t border-gray-900"
+                        :class="{
+                          'text-gray-500': row.keep !== 'ok',
+                          'text-green-300': row.keep === 'ok',
+                          'text-red-300': row.keep === 'ceiling' || row.keep === 'no-convert',
+                        }"
+                      >
+                        <td class="px-1">{{ ri + 1 }}</td>
+                        <td class="px-1">{{ row.amount }}</td>
+                        <td class="px-1">{{ row.currency }}</td>
+                        <td class="px-1 text-right">{{ fmtEx(row.priceEx, 1) }}</td>
+                        <td class="px-1">{{ row.keep }}</td>
+                        <td class="px-1">
+                          <span v-if="row.isInstantBuyout" class="text-amber-300">mkt</span>
+                          <span v-else>{{ row.accountStatus ?? "?" }}</span>
+                        </td>
+                        <td class="px-1 text-gray-400">{{ ageLabel(row.indexedAt) }}</td>
+                        <td class="px-1 text-gray-500 whitespace-nowrap">
+                          {{ row.indexedAt ?? "" }}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
                 </div>
               </div>
             </div>

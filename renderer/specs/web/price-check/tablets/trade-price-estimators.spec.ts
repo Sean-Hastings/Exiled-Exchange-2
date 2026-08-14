@@ -11,6 +11,10 @@ import {
   filterBuyListings,
   filterDustBuyListings,
   listingAmountToExalt,
+  sellEstimateNote,
+  SELL_THIN_PACK_BEFORE,
+  SELL_UNDERCUT_PCT,
+  SELL_UNDERCUT_THIN_PCT,
   type ExaltFx,
 } from "@/web/price-check/tablets/trade-price-estimators";
 
@@ -174,75 +178,99 @@ describe("trade-price-estimators", () => {
     );
   });
 
-  it("sell undercuts pack below cheapest ≥24h stale anchor", () => {
+  it("sell 24h with ≥9 below uses 3% closest-under only", () => {
     const now = Date.parse("2026-08-11T12:00:00.000Z");
-    const dayMs = 24 * 60 * 60 * 1000;
-    const price = estimateSellPriceEx(
-      [
-        { priceEx: 100, indexedAt: new Date(now - hour(1)).toISOString() },
-        {
-          priceEx: 200,
-          indexedAt: new Date(now - dayMs - hour(1)).toISOString(),
-        },
-        { priceEx: 300, indexedAt: new Date(now - dayMs * 2).toISOString() },
-      ],
-      { nowMs: now },
-    );
-    expect(price).toBe(90);
-  });
-
-  it("sell undercuts pack under near-floor stale (not ride the stale ask)", () => {
-    const now = Date.parse("2026-08-11T12:00:00.000Z");
-    const dayMs = 24 * 60 * 60 * 1000;
-    const price = estimateSellPriceEx(
-      [
-        { priceEx: 100, indexedAt: new Date(now - hour(1)).toISOString() },
-        {
-          priceEx: 110,
-          indexedAt: new Date(now - dayMs - hour(1)).toISOString(),
-        },
-      ],
-      { nowMs: now },
-    );
-    expect(price).toBe(90);
-  });
-
-  it("sell undercuts live floor when no stale listings", () => {
-    const now = Date.parse("2026-08-11T12:00:00.000Z");
-    const price = estimateSellPriceEx(
-      [
-        { priceEx: 100, indexedAt: new Date(now - hour(1)).toISOString() },
-        { priceEx: 150, indexedAt: new Date(now - hour(2)).toISOString() },
-      ],
-      { nowMs: now },
-    );
-    expect(price).toBe(90);
-  });
-
-  it("sell ignores ancient ghosts beyond max stale age", () => {
-    const now = Date.parse("2026-08-11T12:00:00.000Z");
-    const dayMs = 24 * 60 * 60 * 1000;
-    const price = estimateSellPriceEx(
-      [
-        {
-          priceEx: 785,
-          indexedAt: new Date(now - dayMs * 60).toISOString(),
-        },
-        { priceEx: 120, indexedAt: new Date(now - hour(2)).toISOString() },
-      ],
-      { nowMs: now },
-    );
-    expect(price).toBe(108);
-  });
-
-  it("deep all-stale book undercuts cheapest recently-stale ask", () => {
-    const now = Date.parse("2026-08-11T12:00:00.000Z");
-    const dayMs = 24 * 60 * 60 * 1000;
-    const listings = Array.from({ length: 8 }, (_, i) => ({
-      priceEx: 200 + i * 10,
-      indexedAt: new Date(now - dayMs * 2 - hour(i)).toISOString(),
+    const below = Array.from({ length: 9 }, (_, i) => ({
+      priceEx: 100 + i,
+      indexedAt: new Date(now - hour(1)).toISOString(),
     }));
-    expect(estimateSellPriceEx(listings, { nowMs: now })).toBe(192);
+    const listings = [
+      ...below,
+      { priceEx: 1000, indexedAt: new Date(now - dayMs() - hour(1)).toISOString() },
+    ];
+    const price = estimateSellPriceEx(listings, { nowMs: now });
+    expect(price).toBeCloseTo(108 * 0.97);
+    expect(sellEstimateNote(listings, { nowMs: now })).toMatch(/3% closest-under/);
+    expect(SELL_THIN_PACK_BEFORE).toBe(9);
+    expect(SELL_UNDERCUT_PCT).toBe(0.03);
+  });
+
+  it("sell 24h with 1 below (thin) is max(3% pack, 10% stale)", () => {
+    const now = Date.parse("2026-08-11T12:00:00.000Z");
+    const listings = [
+      { priceEx: 100, indexedAt: new Date(now - hour(1)).toISOString() },
+      {
+        priceEx: 200,
+        indexedAt: new Date(now - dayMs() - hour(1)).toISOString(),
+      },
+    ];
+    const price = estimateSellPriceEx(listings, { nowMs: now });
+    expect(price).toBeCloseTo(Math.max(100 * 0.97, 200 * 0.9));
+    expect(sellEstimateNote(listings, { nowMs: now })).toMatch(/max\(3% pack, 10% stale\)/);
+  });
+
+  it("sell 24h with 0 below is 10% stale-anchor", () => {
+    const now = Date.parse("2026-08-11T12:00:00.000Z");
+    const listings = [
+      {
+        priceEx: 200,
+        indexedAt: new Date(now - dayMs() * 2).toISOString(),
+      },
+      {
+        priceEx: 300,
+        indexedAt: new Date(now - dayMs() * 2).toISOString(),
+      },
+    ];
+    expect(estimateSellPriceEx(listings, { nowMs: now })).toBeCloseTo(180);
+    expect(sellEstimateNote(listings, { nowMs: now })).toMatch(/10% stale-anchor/);
+    expect(SELL_UNDERCUT_THIN_PCT).toBe(0.1);
+  });
+
+  it("sell with no 24h listing uses 3% of window-max (not cheapest)", () => {
+    const now = Date.parse("2026-08-11T12:00:00.000Z");
+    const listings = [
+      { priceEx: 100, indexedAt: new Date(now - hour(1)).toISOString() },
+      { priceEx: 150, indexedAt: new Date(now - hour(2)).toISOString() },
+    ];
+    expect(estimateSellPriceEx(listings, { nowMs: now })).toBeCloseTo(150 * 0.97);
+    expect(sellEstimateNote(listings, { nowMs: now })).toMatch(/3% window-max/);
+    expect(sellEstimateNote(listings, { nowMs: now })).not.toMatch(/stale/);
+  });
+
+  it("sell treats 60-day cheap Instant Buyout as a valid stale (not ignored)", () => {
+    const now = Date.parse("2026-08-11T12:00:00.000Z");
+    const listings = [
+      {
+        priceEx: 785,
+        indexedAt: new Date(now - dayMs() * 60).toISOString(),
+      },
+      { priceEx: 120, indexedAt: new Date(now - hour(2)).toISOString() },
+    ];
+    // If 14-day ghost cap still applied this would undercut the fresh 120 only.
+    expect(estimateSellPriceEx(listings, { nowMs: now })).toBeCloseTo(
+      Math.max(120 * 0.97, 785 * 0.9),
+    );
+  });
+
+  it("crystal-dump-like: 1×337 fresh + 19×1000 fresh → 1000×0.97", () => {
+    const listings = [
+      { priceEx: 337 },
+      ...Array.from({ length: 19 }, () => ({ priceEx: 1000 })),
+    ];
+    expect(estimateSellPriceEx(listings)).toBeCloseTo(970);
+    expect(sellEstimateNote(listings)).toMatch(/3% window-max/);
+  });
+
+  it("thin 1-div + 24h 1000 → max(337×0.97, 1000×0.90) = 900", () => {
+    const now = Date.parse("2026-08-11T12:00:00.000Z");
+    const listings = [
+      { priceEx: 337, indexedAt: new Date(now - hour(1)).toISOString() },
+      {
+        priceEx: 1000,
+        indexedAt: new Date(now - dayMs() - hour(1)).toISOString(),
+      },
+    ];
+    expect(estimateSellPriceEx(listings, { nowMs: now })).toBeCloseTo(900);
   });
 
   it("classifyMarketFlow detects refill as hot", () => {
@@ -275,4 +303,8 @@ describe("trade-price-estimators", () => {
 
 function hour(n: number) {
   return n * 60 * 60 * 1000;
+}
+
+function dayMs() {
+  return 24 * 60 * 60 * 1000;
 }

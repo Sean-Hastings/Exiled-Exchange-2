@@ -32,7 +32,8 @@ import {
   effectiveBuyCountForRegime,
   estimateBuyPriceEx,
   estimateBuyPriceMeanOfCheapestEx,
-  estimateSellPriceEx,
+  estimateSellPriceDetail,
+  isSellListingStale,
   listingAmountToExalt,
   remainingFlowProbeWaitMs,
   type ExaltFx,
@@ -69,13 +70,12 @@ import {
 export type { MarketSyncDebug } from "./market-sync-debug";
 
 /** Bump when conversion / estimator semantics change — invalidates persisted cache. */
-export const MARKET_SYNC_REVISION = 28;
+export const MARKET_SYNC_REVISION = 29;
 
 /** Buy blanks: enough depth for buy@N. Exalted-only so API sort ≈ exalt. */
 const BUY_LISTING_SAMPLE = 30;
-/** Sell comps only need a floor / thin stale sample — not a full book. */
-const SELL_LISTING_SAMPLE = 20;
-const JUNK_LISTING_SAMPLE = 15;
+/** Sell: 3 FETCH batches of 10. Stop early on first kept ≥24h listing. Junk uses the same. */
+const SELL_LISTING_SAMPLE = 30;
 /** Survey fetch depth — fewer FETCH tokens per search. */
 const SURVEY_LISTING_SAMPLE = 8;
 const FETCH_BATCH = 10;
@@ -205,6 +205,7 @@ async function fetchListingsBatched(
   progress: ProgressFn,
   ctx: string,
   isCancelled: () => boolean,
+  shouldStop?: (accumulated: PricingResult[]) => boolean,
 ): Promise<PricingResult[]> {
   const out: PricingResult[] = [];
   const total = Math.ceil(resultIds.length / FETCH_BATCH);
@@ -238,6 +239,7 @@ async function fetchListingsBatched(
       }
       throw e;
     }
+    if (shouldStop?.(out)) break;
   }
   return out;
 }
@@ -418,6 +420,10 @@ async function searchPricedListings(
   floorEx: number,
   ceilingEx: number,
   sample = BUY_LISTING_SAMPLE,
+  opts?: {
+    /** Sell path only: after each FETCH batch of 10, stop if any kept listing is ≥24h. */
+    stopOnStale?: boolean;
+  },
 ): Promise<{
   priced: PricedListing[];
   rows: ListingDebugRow[];
@@ -452,6 +458,14 @@ async function searchPricedListings(
     progress,
     ctx,
     isCancelled,
+    opts?.stopOnStale
+      ? (accumulated) => {
+          const classified = accumulated.map((l) =>
+            classifyListing(l, fx, floorEx, ceilingEx),
+          );
+          return keptToPriced(classified).some((l) => isSellListingStale(l));
+        }
+      : undefined,
   );
   const rows = listings.map((l) => classifyListing(l, fx, floorEx, ceilingEx));
   return {
@@ -645,7 +659,7 @@ function commitBlankBuyPrice(
   return price;
 }
 
-/** Sell: stale-anchor + undercut pack below (see estimateSellPriceEx). */
+/** Sell: Instant Buyout estimator (see estimateSellPriceDetail). FETCH stops at first kept ≥24h. */
 async function searchSellPriceEx(
   body: TabletTradeSearchBody,
   leagueId: string,
@@ -668,10 +682,13 @@ async function searchSellPriceEx(
       0,
       sellCeiling,
       sample,
+      { stopOnStale: true },
     );
-    const price = estimateSellPriceEx(hit.priced, { ceilingEx: sellCeiling });
+    const detail = estimateSellPriceDetail(hit.priced, {
+      ceilingEx: sellCeiling,
+    });
     return {
-      price,
+      price: detail.price,
       trace: buildSearchTrace({
         kind: "sell-combo",
         label: ctx,
@@ -682,11 +699,8 @@ async function searchSellPriceEx(
         totalHits: hit.totalHits,
         rows: hit.rows,
         priced: hit.priced,
-        estimate: price,
-        estimateNote:
-          price != null
-            ? `stale-anchor + undercut pack-below · ${body.query.status.option}`
-            : `empty · ${body.query.status.option}`,
+        estimate: detail.price,
+        estimateNote: `${detail.note} · ${body.query.status.option}`,
         floorEx: 0,
         ceilingEx: sellCeiling,
       }),
@@ -1415,7 +1429,7 @@ export async function syncTabletMarketFromTrade(opts?: {
           typeName,
           isCancelled,
           sellCeiling,
-          JUNK_LISTING_SAMPLE,
+          SELL_LISTING_SAMPLE,
           includeAvailable,
         );
         trace.kind = "sell-junk";

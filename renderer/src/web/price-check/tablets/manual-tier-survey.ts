@@ -1,5 +1,5 @@
 import { TABLET_BASES, TABLET_MOD_WEIGHTS } from "./mod-weights";
-import { modQualityTier } from "./mod-tiers";
+import { modQualityTierForBase } from "./mod-tiers";
 import { surveyModsForBase } from "./tier-survey-plan";
 import type {
   SurveyObservation,
@@ -139,7 +139,7 @@ export function buildManualSurveySteps(
       key: `single:${m.id}`,
       kind: "single",
       label: `single ${m.id}`,
-      lookFor: `${modQualityTier(m.id)} · ${filterNameForMod(m.id)}`,
+      lookFor: `${modQualityTierForBase(MANUAL_SURVEY_BASE_ID, m.id)} · ${filterNameForMod(m.id)}`,
       typeName,
       filterName: filterNameForMod(m.id),
       filterMin: min,

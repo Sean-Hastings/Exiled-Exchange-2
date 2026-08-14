@@ -7,7 +7,7 @@ import {
 } from "./tablet-mdp";
 import { priceAtRoll } from "./mod-roll-price-curve";
 import { templeCrystalRollCurve } from "./temple-manual-market";
-import { modQualityTier } from "./mod-tiers";
+import { modQualityTierForBase } from "./mod-tiers";
 import type { MarketPriceCache } from "./tablet-ev-calculator";
 import type { ParsedTabletItem, ParsedTabletMod } from "./tablet-types";
 
@@ -58,7 +58,9 @@ export function estimateTabletSellPrice(
   market: MarketPriceCache,
 ): TabletSellEstimate {
   const modIds = parsed.parsedMods.map((m) => m.id);
-  const rareTier = modIds.length ? modsToRareTier(modIds) : "Trash";
+  const rareTier = modIds.length
+    ? modsToRareTier(modIds, parsed.tabletBaseKey)
+    : "Trash";
   const sales = buildTierSaleTable(market, parsed.tabletBaseKey);
   const tierAsk = sales
     ? parsed.isCorrupted
@@ -71,7 +73,7 @@ export function estimateTabletSellPrice(
     let bestRoll = Number.NaN;
     let detail = "";
     for (const m of parsed.parsedMods) {
-      if (modQualityTier(m.id) !== "S") continue;
+      if (modQualityTierForBase(parsed.tabletBaseKey, m.id) !== "S") continue;
       const curve = rollCurveForMod(m.id);
       if (!curve || !Number.isFinite(m.rolledValue)) continue;
       const p = priceAtRoll(curve, m.rolledValue);

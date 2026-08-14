@@ -17,7 +17,7 @@ import {
   SIDE_SCORE,
   classifyModCombo,
   comboScoreToRareTier,
-  modQualityTier,
+  modQualityTierForBase,
   type SidePattern,
 } from "./mod-tiers";
 import type { ModQualityTier } from "./strat-types";
@@ -183,9 +183,10 @@ export function qualityToRareTier(q: ModQualityTier): RareTier {
 /**
  * Classify a rare by full affix set (prefix side × suffix side), not max(mod).
  * See classifyModCombo / strat_reco divine vs merchant bands.
+ * Pass baseId for Temple (and future) quality overlays.
  */
-export function modsToRareTier(modIds: string[]): RareTier {
-  return classifyModCombo(modIds).rareTier;
+export function modsToRareTier(modIds: string[], baseId?: string): RareTier {
+  return classifyModCombo(modIds, baseId).rareTier;
 }
 
 /**
@@ -394,7 +395,10 @@ function accumulateRare2p2sDist(
       for (const sId of base.allowedSuffixPool) {
         const sw = modWeightForBase(baseId, sId, wOpts);
         if (sw <= 0) continue;
-        onTier(modsToRareTier([pId, sId]), (pw / totalP) * (sw / totalS));
+        onTier(
+          modsToRareTier([pId, sId], baseId),
+          (pw / totalP) * (sw / totalS),
+        );
       }
     }
     return;
@@ -402,7 +406,7 @@ function accumulateRare2p2sDist(
   for (const pp of prefPairs) {
     for (const sp of sufPairs) {
       onTier(
-        modsToRareTier([pp.a, pp.b, sp.a, sp.b]),
+        modsToRareTier([pp.a, pp.b, sp.a, sp.b], baseId),
         pp.prob * sp.prob,
       );
     }
@@ -452,6 +456,7 @@ function sideFromQualities(
 function rareTierFromSides(
   prefQs: ModQualityTier[],
   sufQs: ModQualityTier[],
+  baseId?: string,
 ): RareTier {
   const p = sideFromQualities(prefQs[0]!, prefQs[1] ?? null);
   const s = sideFromQualities(sufQs[0]!, sufQs[1] ?? null);
@@ -463,7 +468,15 @@ function rareTierFromSides(
   if (pS >= 1 && sS >= 1) score += 25;
   else if ((pS >= 1 && sA >= 1) || (sS >= 1 && pA >= 1)) score += 20;
   else if (pA >= 1 && sA >= 1) score += 20;
-  return comboScoreToRareTier(score);
+  const tier = comboScoreToRareTier(score);
+  // Temple: after overlay the only S is crystal — any S quality → rareTier S.
+  if (
+    baseId === "temple_tablet" &&
+    (pS >= 1 || sS >= 1)
+  ) {
+    return "S";
+  }
+  return tier;
 }
 
 /**
@@ -484,7 +497,7 @@ function chaosReplacementByQuality(
   for (const id of pool) {
     if (id === keepId) continue;
     const w = modWeightForBase(baseId, id, wOpts);
-    if (w > 0) out[modQualityTier(id)] += w;
+    if (w > 0) out[modQualityTierForBase(baseId, id)] += w;
   }
   return out;
 }
@@ -529,7 +542,7 @@ export function magicOnePOneSBranchProbs(
       const w = modWeightForBase(baseId, id, wOpts);
       if (w <= 0) continue;
       W += w;
-      shares[modQualityTier(id)] += w;
+      shares[modQualityTierForBase(baseId, id)] += w;
     }
     if (!(W > 0)) return null;
     for (const q of QUALITY_TIERS) shares[q] /= W;
@@ -631,24 +644,24 @@ export function buildChaosOneAffixTransitions(
     for (const pId of base.allowedPrefixPool) {
       const pw = modWeightForBase(baseId, pId, wOpts);
       if (pw <= 0) continue;
-      const pQ = modQualityTier(pId);
+      const pQ = modQualityTierForBase(baseId, pId);
       for (const sId of base.allowedSuffixPool) {
         const sw = modWeightForBase(baseId, sId, wOpts);
         if (sw <= 0) continue;
-        const sQ = modQualityTier(sId);
+        const sQ = modQualityTierForBase(baseId, sId);
         const configProb = (pw / totalP) * (sw / totalS);
-        const from = rareTierFromSides([pQ], [sQ]);
+        const from = rareTierFromSides([pQ], [sQ], baseId);
         addSlot(from, configProb, 0.5, "", base.allowedPrefixPool, (nq) =>
-          rareTierFromSides([nq], [sQ]),
+          rareTierFromSides([nq], [sQ], baseId),
         );
         addSlot(from, configProb, 0.5, "", base.allowedSuffixPool, (nq) =>
-          rareTierFromSides([pQ], [nq]),
+          rareTierFromSides([pQ], [nq], baseId),
         );
       }
     }
   } else {
     const slot = 0.25;
-    const qOf = (id: string) => modQualityTier(id);
+    const qOf = (id: string) => modQualityTierForBase(baseId, id);
     for (const pp of prefPairs) {
       const pq0 = qOf(pp.a);
       const pq1 = qOf(pp.b);
@@ -656,18 +669,18 @@ export function buildChaosOneAffixTransitions(
         const sq0 = qOf(sp.a);
         const sq1 = qOf(sp.b);
         const configProb = pp.prob * sp.prob;
-        const from = rareTierFromSides([pq0, pq1], [sq0, sq1]);
+        const from = rareTierFromSides([pq0, pq1], [sq0, sq1], baseId);
         addSlot(from, configProb, slot, pp.b, base.allowedPrefixPool, (nq) =>
-          rareTierFromSides([nq, pq1], [sq0, sq1]),
+          rareTierFromSides([nq, pq1], [sq0, sq1], baseId),
         );
         addSlot(from, configProb, slot, pp.a, base.allowedPrefixPool, (nq) =>
-          rareTierFromSides([pq0, nq], [sq0, sq1]),
+          rareTierFromSides([pq0, nq], [sq0, sq1], baseId),
         );
         addSlot(from, configProb, slot, sp.b, base.allowedSuffixPool, (nq) =>
-          rareTierFromSides([pq0, pq1], [nq, sq1]),
+          rareTierFromSides([pq0, pq1], [nq, sq1], baseId),
         );
         addSlot(from, configProb, slot, sp.a, base.allowedSuffixPool, (nq) =>
-          rareTierFromSides([pq0, pq1], [sq0, nq]),
+          rareTierFromSides([pq0, pq1], [sq0, nq], baseId),
         );
       }
     }
@@ -722,7 +735,7 @@ function accumulateMeasuredPairSales(
       if (sw <= 0) continue;
       const prob = pProb * (sw / totalS);
       globalProb += prob;
-      const tier = modsToRareTier([pId, sId]);
+      const tier = modsToRareTier([pId, sId], baseId);
       const sale = measured(market.modValueMap[`${pId}+${sId}`]);
       if (Number.isFinite(sale)) {
         globalMeasuredProb += prob;

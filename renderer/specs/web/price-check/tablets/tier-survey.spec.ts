@@ -173,9 +173,12 @@ describe("tier-survey-analyze", () => {
       ["breach_pack_size_t1", "breach_splinter_qty_t1"],
       4000,
     );
-    expect(coarsePattern(["breach_pack_size_t1", "breach_splinter_qty_t1"])).toBe(
-      "SA",
-    );
+    expect(
+      coarsePattern(
+        ["breach_pack_size_t1", "breach_splinter_qty_t1"],
+        "breach_tablet",
+      ),
+    ).toBe("SA");
     const analysis = analyzeTierSurvey(doc);
     const sa = analysis.byPattern.find((p) => p.pattern === "SA");
     const soloA = analysis.byPattern.find((p) => p.pattern === "solo_A");

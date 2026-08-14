@@ -5,7 +5,7 @@ import type {
   RawSeenAggregate,
   RawSeenCell,
 } from "./roll-seen-types";
-import { modQualityTier } from "./mod-tiers";
+import { modQualityTierForBase } from "./mod-tiers";
 import { TABLET_BASES } from "./mod-weights";
 
 const ALPHA0 = 1;
@@ -222,7 +222,7 @@ export function drawSideRates(
       c.baseId === baseId &&
       c.side === side &&
       c.trials > 0 &&
-      modQualityTier(c.modId) !== "Junk" &&
+      modQualityTierForBase(baseId, c.modId) !== "Junk" &&
       pool.includes(c.modId),
   );
 

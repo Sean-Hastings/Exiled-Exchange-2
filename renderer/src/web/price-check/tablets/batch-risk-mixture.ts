@@ -10,7 +10,7 @@ import {
   RISK_MAX_CHAOS_PER_ITEM,
 } from "./batch-law";
 import { policyUsesReforge, type Rng } from "./craft-path-sample";
-import { modQualityTier } from "./mod-tiers";
+import { modQualityTierForBase } from "./mod-tiers";
 import { TABLET_BASES } from "./mod-weights";
 import type { FitWeightOverridesOpts } from "./roll-seen-types";
 import type { RawSeenAggregate } from "./roll-seen-types";
@@ -92,7 +92,7 @@ export function aggregateHasCaredMeasured(
   if (!base) return false;
   return aggregate.cells.some((c) => {
     if (c.baseId !== baseId || !(c.trials > 0)) return false;
-    if (modQualityTier(c.modId) === "Junk") return false;
+    if (modQualityTierForBase(baseId, c.modId) === "Junk") return false;
     const pool =
       c.side === "prefix" ? base.allowedPrefixPool : base.allowedSuffixPool;
     return pool.includes(c.modId);

@@ -5,7 +5,7 @@ import { TABLET_BASES, TABLET_MOD_WEIGHTS } from "./mod-weights";
 import {
   hasExplicitTier,
   hasSessionModTier,
-  modQualityTier,
+  modQualityTierForBase,
 } from "./mod-tiers";
 import type { ModQualityTier } from "./strat-types";
 import type { MarketPriceCache } from "./tablet-ev-calculator";
@@ -98,11 +98,13 @@ export function tierUncertaintyScore(
   survey?: TierSurveyDocument | null,
   baseId?: string,
 ): { score: number; reasons: TierUncertaintyReasons } {
-  const explicit = hasExplicitTier(modId) || hasSessionModTier(modId);
+  const explicit =
+    hasExplicitTier(modId, baseId) || hasSessionModTier(modId);
   const touching = saleTouching(modId, market, baseId);
   // valueScore fallback ≡ no explicit map entry (session still "fallback" for
   // the third bit until committed — but we treat session as resolved above).
-  const valueScoreFallback = !hasExplicitTier(modId) && !hasSessionModTier(modId);
+  const valueScoreFallback =
+    !hasExplicitTier(modId, baseId) && !hasSessionModTier(modId);
   const noAuto = !hasAutoSurveyObservation(modId, survey);
 
   const reasons: TierUncertaintyReasons = {
@@ -142,7 +144,7 @@ export function rankTierUncertainty(
       modId,
       name: def?.name ?? modId,
       side,
-      tier: modQualityTier(modId),
+      tier: modQualityTierForBase(baseId, modId),
       score,
       reasons,
     });

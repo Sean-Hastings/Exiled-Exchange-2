@@ -1,5 +1,5 @@
 import { TABLET_BASES, TABLET_MOD_WEIGHTS } from "./mod-weights";
-import { modQualityTier } from "./mod-tiers";
+import { modQualityTierForBase } from "./mod-tiers";
 import type {
   SurveyModRef,
   SurveyWorkItem,
@@ -18,7 +18,7 @@ export function isTradeQueryableStatId(tradeStatId: string): boolean {
   return /^explicit\.stat_\d+$/.test(tradeStatId);
 }
 
-function modRef(id: string): SurveyModRef | null {
+function modRef(id: string, baseId?: string): SurveyModRef | null {
   const m = TABLET_MOD_WEIGHTS[id];
   if (!m) return null;
   if (!isTradeQueryableStatId(m.tradeStatId)) return null;
@@ -26,7 +26,7 @@ function modRef(id: string): SurveyModRef | null {
     id,
     tradeStatId: m.tradeStatId,
     isPrefix: m.isPrefix,
-    quality: modQualityTier(id),
+    quality: modQualityTierForBase(baseId, id),
     valueScore: m.valueScore,
     minValue: m.minValue,
     name: m.name,
@@ -46,10 +46,10 @@ export function surveyModsForBase(baseId: string): {
   const mechS = base.allowedSuffixPool.filter((id) => !isJunkId(id));
 
   const prefixes = [...mechP, ...JUNK_PREFIX_SAMPLES]
-    .map(modRef)
+    .map((id) => modRef(id, baseId))
     .filter((m): m is SurveyModRef => !!m);
   const suffixes = [...mechS, ...JUNK_SUFFIX_SAMPLES]
-    .map(modRef)
+    .map((id) => modRef(id, baseId))
     .filter((m): m is SurveyModRef => !!m);
 
   // Dedupe by id

@@ -1,4 +1,4 @@
-import { modQualityTier } from "./mod-tiers";
+import { modQualityTierForBase } from "./mod-tiers";
 import { TABLET_BASES, modWeightForBase } from "./mod-weights";
 import type {
   AffixSide,
@@ -102,7 +102,10 @@ export function fitWeightOverridesFromRates(
 
     const cared = sideTargets.filter((t) => {
       if (forceCared.has(t.modId)) return true;
-      return modQualityTier(t.modId) !== "Junk" && Number.isFinite(t.mleRate);
+      return (
+        modQualityTierForBase(baseId, t.modId) !== "Junk" &&
+        Number.isFinite(t.mleRate)
+      );
     });
 
     // Also forceCared that aren't in targets? Spec: forceCared with measured MLE.
@@ -124,7 +127,7 @@ export function fitWeightOverridesFromRates(
 
     const weights = new Map<string, number>();
     for (const id of pool) {
-      const isJunk = modQualityTier(id) === "Junk";
+      const isJunk = modQualityTierForBase(baseId, id) === "Junk";
       const isCared = cared.some((t) => t.modId === id);
       if (isJunk) {
         if (trashMode === "constant") {
@@ -174,7 +177,7 @@ export function fitWeightOverridesFromRates(
 
       // Re-freeze trash + unmeasured after cared scale
       for (const id of pool) {
-        const isJunk = modQualityTier(id) === "Junk";
+        const isJunk = modQualityTierForBase(baseId, id) === "Junk";
         const isCared = mleById.has(id);
         if (isJunk) {
           if (trashMode === "constant") {
@@ -249,7 +252,7 @@ export function fitWeightOverridesFromRates(
 
     if (trashMode === "constant" && opts?.trashConstant != null) {
       for (const id of pool) {
-        if (modQualityTier(id) === "Junk") {
+        if (modQualityTierForBase(baseId, id) === "Junk") {
           overrides[id] = opts.trashConstant;
         }
       }

@@ -3,7 +3,7 @@ import {
   TABLET_BASES,
   modWeightForBase,
 } from "@/web/price-check/tablets/mod-weights";
-import { modQualityTier } from "@/web/price-check/tablets/mod-tiers";
+import { modQualityTierForBase } from "@/web/price-check/tablets/mod-tiers";
 import {
   fitWeightOverridesFromRates,
   withinAppBTolerance,
@@ -24,7 +24,7 @@ describe("weight-fitter", () => {
     let W = 0;
     for (const id of pool) {
       if (id === caredId) W += caredW;
-      else if (modQualityTier(id) === "Junk") W += trashConstant;
+      else if (modQualityTierForBase(baseId, id) === "Junk") W += trashConstant;
       else W += modWeightForBase(baseId, id); // unmeasured non-junk hold seed
     }
     const pStar = caredW / W;
@@ -53,7 +53,7 @@ describe("weight-fitter", () => {
       if (Object.prototype.hasOwnProperty.call(snap.weightOverrides, id)) {
         return snap.weightOverrides[id]!;
       }
-      if (modQualityTier(id) === "Junk") return trashConstant;
+      if (modQualityTierForBase(baseId, id) === "Junk") return trashConstant;
       return modWeightForBase(baseId, id);
     };
     for (const id of pool) W2 += wOf(id);
@@ -63,7 +63,7 @@ describe("weight-fitter", () => {
 
   it("seed trash freezes Junk at modWeightForBase", () => {
     const baseId = "temple_tablet";
-    const junkId = "junk_monster_eff_t1"; // prefix junk with temple override
+    const junkId = "temple_beacon_pack_t1"; // Temple exclusive Junk
     const seed = modWeightForBase(baseId, junkId);
     const targets: FitRateTarget[] = [
       {
@@ -108,7 +108,7 @@ describe("weight-fitter", () => {
 
   it("sum MLE ≥ 1 → converged false, no apply overrides", () => {
     const baseId = "temple_tablet";
-    // Two non-Junk mods on the same side (crystal S + waystone S suffix)
+    // Two non-Junk mods on the same side (crystal S + waystone B suffix)
     const targets: FitRateTarget[] = [
       {
         modId: "temple_crystal_t1",

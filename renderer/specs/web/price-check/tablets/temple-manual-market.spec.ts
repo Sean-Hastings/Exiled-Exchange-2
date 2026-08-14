@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createEmptyMarketCache } from "@/web/price-check/tablets/default-market";
-import { modQualityTier } from "@/web/price-check/tablets/mod-tiers";
+import { modQualityTierForBase } from "@/web/price-check/tablets/mod-tiers";
 import {
   buildTierSaleTable,
   recommendPolicy,
@@ -22,19 +22,25 @@ function templeMarket() {
 
 describe("temple manual survey market", () => {
   it("tags crystal as S and fillers as Junk", () => {
-    expect(modQualityTier("temple_crystal_t1")).toBe("S");
-    expect(modQualityTier("temple_beacon_pack_t1")).toBe("Junk");
-    expect(modQualityTier("temple_chest_rare_t1")).toBe("Junk");
+    expect(modQualityTierForBase("temple_tablet", "temple_crystal_t1")).toBe(
+      "S",
+    );
+    expect(
+      modQualityTierForBase("temple_tablet", "temple_beacon_pack_t1"),
+    ).toBe("Junk");
+    expect(
+      modQualityTierForBase("temple_tablet", "temple_chest_rare_t1"),
+    ).toBe("Junk");
   });
 
   it("prices A/S from crystal E[p] and Trash from dump (~60); blank buy stays NaN", () => {
     const sales = buildTierSaleTable(templeMarket(), "temple_tablet")!;
     expect(Number.isNaN(sales.baseCost)).toBe(true);
     expect(sales.uncorrupted.Trash).toBe(60);
-    // Crystal 1p1s land in A (solo S); S cascades from A — curve E[p] not flat 775
-    expect(sales.uncorrupted.A).toBeGreaterThan(900);
-    expect(sales.uncorrupted.A).toBeLessThan(2100);
-    expect(sales.uncorrupted.S).toBe(sales.uncorrupted.A);
+    // Crystal 1p1s land in S (crystal-presence force); A cascades from mid/B
+    expect(sales.uncorrupted.S).toBeGreaterThan(900);
+    expect(sales.uncorrupted.S).toBeLessThan(2100);
+    expect(sales.uncorrupted.A).toBeLessThanOrEqual(sales.uncorrupted.S);
     expect(sales.uncorrupted.B).toBeGreaterThanOrEqual(60);
     expect(sales.uncorrupted.B).toBeLessThanOrEqual(80);
   });

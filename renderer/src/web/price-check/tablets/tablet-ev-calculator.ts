@@ -4,7 +4,7 @@ import {
   weightOptsForBase,
   type ModWeightOpts,
 } from "./mod-weights";
-import { modQualityTier, countTier } from "./mod-tiers";
+import { countTier } from "./mod-tiers";
 import {
   buildRareTierJudgementRegexes,
   type TierJudgementRegex,
@@ -883,8 +883,8 @@ export class TabletEVEngine {
     const currentPrice = sell.sellEx;
     const rareStrategy = baseEV.rareStrategy;
     const modIds = parsedTablet.parsedMods.map((m) => m.id);
-    const sCount = countTier(modIds, "S");
-    const aCount = countTier(modIds, "A");
+    const sCount = countTier(modIds, "S", parsedTablet.tabletBaseKey);
+    const aCount = countTier(modIds, "A", parsedTablet.tabletBaseKey);
     const fmt = (n: number) =>
       Number.isFinite(n) ? n.toFixed(2) : "NaN";
     const tierTag = `tier ${sell.rareTier}`;

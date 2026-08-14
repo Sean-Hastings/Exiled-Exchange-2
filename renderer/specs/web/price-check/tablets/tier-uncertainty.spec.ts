@@ -18,7 +18,10 @@ describe("tier-uncertainty", () => {
     clearSessionModTiers();
   });
 
-  it("hasExplicitTier is true for EXPLICIT map entries", () => {
+  it("hasExplicitTier is true for per-base map entries", () => {
+    expect(hasExplicitTier("temple_crystal_t1", "temple_tablet")).toBe(
+      true,
+    );
     expect(hasExplicitTier("temple_crystal_t1")).toBe(true);
     expect(hasExplicitTier("this_mod_does_not_exist_xyz")).toBe(false);
   });
@@ -88,6 +91,7 @@ describe("tier-uncertainty", () => {
       "temple_crystal_t1",
       market,
       survey,
+      "temple_tablet",
     );
     expect(crystal.reasons.noExplicitTier).toBe(false);
     expect(crystal.reasons.notSaleTouching).toBe(false);
@@ -97,12 +101,15 @@ describe("tier-uncertainty", () => {
 
   it("session set tier reduces ranking uncertainty", () => {
     const market = createEmptyMarketCache();
-    const before = rankTierUncertainty("temple_tablet", market, null);
-    const target = before.find((r) => !hasExplicitTier(r.modId));
+    // Temple seals its pool; use Breach where shared fillers lack explicit tags.
+    const before = rankTierUncertainty("breach_tablet", market, null);
+    const target = before.find(
+      (r) => !hasExplicitTier(r.modId, "breach_tablet"),
+    );
     expect(target).toBeTruthy();
     const scoreBefore = target!.score;
     setSessionModTier(target!.modId, "B");
-    const after = rankTierUncertainty("temple_tablet", market, null);
+    const after = rankTierUncertainty("breach_tablet", market, null);
     const row = after.find((r) => r.modId === target!.modId)!;
     expect(row.score).toBeLessThan(scoreBefore);
     expect(row.tier).toBe("B");

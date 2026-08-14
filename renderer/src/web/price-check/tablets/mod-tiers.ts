@@ -1,109 +1,177 @@
-import { TABLET_MOD_WEIGHTS } from "./mod-weights";
+import { TABLET_BASES, TABLET_MOD_WEIGHTS } from "./mod-weights";
 import type { TabletCategory } from "./tablet-types";
 import type { ModQualityTier } from "./strat-types";
 
 /**
- * S/A/B tier tags + multi-affix combo scoring.
+ * S/A/B tier tags + multi-affix combo scoring — **per tablet baseId**.
  *
- * SIDE_SCORE / MDP cutoffs are a working prior aligned with strat_reco.md.
- * **Breach** quality: Runes of Aldur trade survey (`tier-survey.md`).
- * **Temple** quality: manual trade survey 2026-08-12.
- * **Ritual / Abyss / Delirium / Irradiated multipliers**: post-0.5.0 guide
- * consensus (akrpg Jul 2026, Perra Abyss juice, Jun–Jul craft videos) —
- * ordinal market value only, not spawn weights. Pre-0.5 / tower-era guides
- * are not used here (see WEIGHT_BENCH in mod-weights.ts).
+ * Each base owns an independent map. Do not share one object across bases
+ * (Temple/Breach must not mutate each other).
+ *
+ * - **Temple** (`temple_tablet`): manual trade survey 2026-08-12
+ *   (`manual_review_1.json` / temple-manual-market) — crystal-only premium.
+ * - **Breach**: Runes of Aldur survey priors (`tier-survey.md`).
+ * - **Other bases**: priors seeded from former global effective tags for mods
+ *   in that base's pool — pending per-base trade survey.
+ *
+ * SIDE_SCORE / MDP cutoffs remain a working prior aligned with strat_reco.md.
+ * Fallback when a mod is missing from the base map: valueScore → Junk-by-score
+ * (or Junk when score is low). Prefer {@link modQualityTierForBase} everywhere
+ * MDP/EV/fit knows the base.
  */
-const EXPLICIT_TIER_BY_MOD_ID: Record<string, ModQualityTier> = {
-  // Irradiated / shared map
-  map_waystone_qty_t1: "S",
-  /** Breeding is (5–7)% on live PoE2DB after 0.5 general retune — support, not chase. */
-  map_pack_size_t1: "B",
-  map_pack_size_t2: "B",
-  map_quantity_t1: "B",
-  map_quantity_t2: "Junk",
-  map_rarity_t1: "B",
-  /** Universal multipliers (akrpg): inflate with league S-mods; weak alone. */
-  junk_monster_eff_t1: "A",
-  junk_item_rarity_t1: "A",
-  junk_rare_mons_t1: "B",
-  junk_map_mods_t1: "A",
 
-  // Delirium
-  delirium_splinter_stack_t1: "S",
-  delirium_splinter_stack_t2: "A",
-  delirium_fracturing_t1: "A",
-  delirium_pack_size_t1: "A",
-  delirium_pack_size_t2: "B",
-  delirium_boss_chance_t1: "B",
+/** Shared Irradiated/map priors — copied into each non-Temple base (fresh object). */
+function sharedMapQualityPrior(): Record<string, ModQualityTier> {
+  return {
+    map_waystone_qty_t1: "S",
+    map_pack_size_t1: "B",
+    map_pack_size_t2: "B",
+    map_quantity_t1: "B",
+    map_quantity_t2: "Junk",
+    map_rarity_t1: "B",
+    junk_monster_eff_t1: "A",
+    junk_item_rarity_t1: "A",
+    junk_rare_mons_t1: "B",
+    junk_map_mods_t1: "A",
+    junk_extra_azmeri_t1: "A",
+    junk_azmeri_chance_t1: "A",
+  };
+}
 
-  // Breach — calibrated from Runes of Aldur survey r5 (dump≈8ex).
-  // Splinters: Domain is 15–30%; trade still returns 0 under uses+available
-  // (dump4 Standard saw hits). Keep S/A prior; survey r6 retries without uses.
-  breach_splinter_qty_t1: "S",
-  breach_splinter_qty_t2: "A",
-  breach_pack_size_t1: "A",
-  breach_pack_size_t2: "B",
-  /** Best liquid driver; solo ≈ dump. */
-  breach_rare_potency_t1: "A",
-  /** Solo ~dump; with potency ≈ blank mid. */
-  breach_hiveblood_t1: "B",
-  /** With potency: ~329ex liquid (n≈1600) — A combo piece. r4’s ~38ex was a fluke. */
-  breach_unstable_rare_t1: "A",
-  breach_wombgift_qty_t1: "B",
-  breach_vruun_chance_t1: "B",
+/**
+ * Fill every mod in the base pool: named tiers win; unlisted pool mods → Junk.
+ * Used for Temple so score-fallback cannot promote fillers to A.
+ */
+function sealPoolAsJunk(
+  baseId: string,
+  named: Record<string, ModQualityTier>,
+): Record<string, ModQualityTier> {
+  const base = TABLET_BASES[baseId];
+  const out: Record<string, ModQualityTier> = { ...named };
+  if (!base) return out;
+  for (const id of [
+    ...base.allowedPrefixPool,
+    ...base.allowedSuffixPool,
+  ]) {
+    if (!Object.prototype.hasOwnProperty.call(out, id)) out[id] = "Junk";
+  }
+  return out;
+}
 
-  // Expedition — logbooks still the chase; remnants prioritized in 0.5 farm guides.
-  expedition_logbook_t1: "S",
-  expedition_logbook_t2: "A",
-  expedition_relic_effect_t1: "A",
-  expedition_remnants_t1: "A",
-  expedition_rare_monsters_t1: "B",
-  expedition_artifacts_t1: "B",
+/** Merge shared prior + exclusives into a new object (never share maps). */
+function baseMap(
+  exclusives: Record<string, ModQualityTier>,
+): Record<string, ModQualityTier> {
+  return { ...sharedMapQualityPrior(), ...exclusives };
+}
 
-  // Boss / Overseer — Azmeri niche (akrpg); waystone from bosses for sustain.
-  boss_waystone_qty_t1: "S",
-  boss_waystone_qty_t2: "A",
-  boss_item_rarity_t1: "A",
-  junk_extra_azmeri_t1: "A",
-  junk_azmeri_chance_t1: "A",
+/**
+ * Per-base quality maps. Independent objects — Temple survey must not affect
+ * Breach A|A calibration and vice versa.
+ */
+const EXPLICIT_TIER_BY_BASE: Record<
+  string,
+  Record<string, ModQualityTier>
+> = {
+  /**
+   * Temple survey 2026-08-12: only crystal is premium (~775ex solo).
+   * Mid-band (~75–80 vs dump ~60) → B so they stay distinct from Trash fillers.
+   * A empty — no mid-band A that could A|A → MDP S without crystal.
+   * Remaining exclusives + shared fillers → Junk (sealed).
+   */
+  temple_tablet: sealPoolAsJunk("temple_tablet", {
+    temple_crystal_t1: "S",
+    map_pack_size_t1: "B",
+    map_pack_size_t2: "B",
+    map_waystone_qty_t1: "B",
+    junk_monster_eff_t1: "B",
+    junk_item_rarity_t1: "B",
+    map_rarity_t1: "B",
+    // Explicit Junk for exclusives (also sealed for other pool fillers)
+    temple_beacon_pack_t1: "Junk",
+    temple_chest_rare_t1: "Junk",
+    temple_unique_monster_t1: "Junk",
+    temple_extra_pack_t1: "Junk",
+    temple_extra_pack_chance_t1: "Junk",
+    temple_summon_mons_t1: "Junk",
+  }),
 
-  // Abyss — Perra juice tier list (0.5): +rares S+; abyssal mods / map rares S;
-  // four-extra Abysses contested (akrpg top vs Perra B) → A until trade survey.
-  // Desecrated currency often overrated for Omen farms → B.
-  abyss_rare_spawn_t1: "S",
-  abyss_abyssal_mods_t1: "A",
-  abyss_four_chance_t1: "A",
-  abyss_monster_spawn_t1: "A",
-  abyss_monster_spawn_t2: "B",
-  abyss_desecrated_t1: "B",
-  abyss_depths_t1: "B",
-  abyss_pit_reward_t1: "B",
+  // Priors pending per-base trade survey (seeded from former global tags).
+  breach_tablet: baseMap({
+    breach_splinter_qty_t1: "S",
+    breach_splinter_qty_t2: "A",
+    breach_pack_size_t1: "A",
+    breach_pack_size_t2: "B",
+    breach_rare_potency_t1: "A",
+    breach_hiveblood_t1: "B",
+    breach_unstable_rare_t1: "A",
+    breach_wombgift_qty_t1: "B",
+    breach_vruun_chance_t1: "B",
+  }),
 
-  // Ritual — post-0.5 flip king: +favour rerolls always money (even 1 sells).
-  ritual_reroll_t1: "S",
-  ritual_omen_t1: "A",
-  ritual_reroll_cost_t1: "A",
-  ritual_defer_cost_t1: "B",
-  ritual_tribute_t1: "B",
-  ritual_defer_t1: "Junk",
+  delirium_tablet: baseMap({
+    delirium_splinter_stack_t1: "S",
+    delirium_splinter_stack_t2: "A",
+    delirium_fracturing_t1: "A",
+    delirium_pack_size_t1: "A",
+    delirium_pack_size_t2: "B",
+    delirium_boss_chance_t1: "B",
+  }),
 
-  // Temple / Vaal — manual trade survey 2026-08-12 (dump≈50, blank≈100).
-  // Crystal ~775ex solo; beacon/chest/eff/pack support showed no combo lift.
-  temple_crystal_t1: "S",
-  temple_beacon_pack_t1: "Junk",
-  temple_chest_rare_t1: "Junk",
-  temple_unique_monster_t1: "Junk",
-  temple_extra_pack_t1: "Junk",
-  temple_extra_pack_chance_t1: "Junk",
-  temple_summon_mons_t1: "Junk",
+  expedition_tablet: baseMap({
+    expedition_logbook_t1: "S",
+    expedition_logbook_t2: "A",
+    expedition_relic_effect_t1: "A",
+    expedition_remnants_t1: "A",
+    expedition_rare_monsters_t1: "B",
+    expedition_artifacts_t1: "B",
+  }),
+
+  ritual_tablet: baseMap({
+    ritual_reroll_t1: "S",
+    ritual_omen_t1: "A",
+    ritual_reroll_cost_t1: "A",
+    ritual_defer_cost_t1: "B",
+    ritual_tribute_t1: "B",
+    ritual_defer_t1: "Junk",
+  }),
+
+  overseer_tablet: baseMap({
+    boss_waystone_qty_t1: "S",
+    boss_waystone_qty_t2: "A",
+    boss_item_rarity_t1: "A",
+  }),
+
+  abyss_tablet: baseMap({
+    abyss_rare_spawn_t1: "S",
+    abyss_abyssal_mods_t1: "A",
+    abyss_four_chance_t1: "A",
+    abyss_monster_spawn_t1: "A",
+    abyss_monster_spawn_t2: "B",
+    abyss_desecrated_t1: "B",
+    abyss_depths_t1: "B",
+    abyss_pit_reward_t1: "B",
+  }),
+
+  /** Irradiated is shared-pool only — copy of shared map prior. */
+  irradiated_tablet: sharedMapQualityPrior(),
 };
 
-/** Session overlay from TierUncertaintyPanel (not yet committed to mod-tiers). */
+/** Session overlay from TierUncertaintyPanel (not yet committed to base maps). */
 const SESSION_TIER_BY_MOD_ID: Record<string, ModQualityTier> = {};
 
-/** True iff modId has an entry in EXPLICIT_TIER_BY_MOD_ID (§3.8). */
-export function hasExplicitTier(modId: string): boolean {
-  return Object.prototype.hasOwnProperty.call(EXPLICIT_TIER_BY_MOD_ID, modId);
+/** True iff modId has an entry in that base's explicit map (§3.8). */
+export function hasExplicitTier(modId: string, baseId?: string): boolean {
+  if (baseId) {
+    return Object.prototype.hasOwnProperty.call(
+      EXPLICIT_TIER_BY_BASE[baseId] ?? {},
+      modId,
+    );
+  }
+  for (const map of Object.values(EXPLICIT_TIER_BY_BASE)) {
+    if (Object.prototype.hasOwnProperty.call(map, modId)) return true;
+  }
+  return false;
 }
 
 export function hasSessionModTier(modId: string): boolean {
@@ -114,7 +182,7 @@ export function getSessionModTier(modId: string): ModQualityTier | undefined {
   return SESSION_TIER_BY_MOD_ID[modId];
 }
 
-/** Runtime tier overlay for uncertainty panel; does not mutate EXPLICIT map. */
+/** Runtime tier overlay for uncertainty panel; does not mutate base maps. */
 export function setSessionModTier(
   modId: string,
   tier: ModQualityTier | null,
@@ -129,14 +197,38 @@ export function clearSessionModTiers(): void {
   }
 }
 
-export function modQualityTier(modId: string): ModQualityTier {
-  if (SESSION_TIER_BY_MOD_ID[modId]) return SESSION_TIER_BY_MOD_ID[modId]!;
-  if (EXPLICIT_TIER_BY_MOD_ID[modId]) return EXPLICIT_TIER_BY_MOD_ID[modId]!;
+function tierFromValueScore(modId: string): ModQualityTier {
   const score = TABLET_MOD_WEIGHTS[modId]?.valueScore ?? 0;
   if (score >= 90) return "S";
   if (score >= 70) return "A";
   if (score >= 45) return "B";
   return "Junk";
+}
+
+/**
+ * Base-aware quality tier — sole source of truth for EV / MDP / combo scoring.
+ */
+export function modQualityTierForBase(
+  baseId: string | undefined,
+  modId: string,
+): ModQualityTier {
+  if (SESSION_TIER_BY_MOD_ID[modId]) return SESSION_TIER_BY_MOD_ID[modId]!;
+  if (baseId) {
+    const map = EXPLICIT_TIER_BY_BASE[baseId];
+    if (map && Object.prototype.hasOwnProperty.call(map, modId)) {
+      return map[modId]!;
+    }
+  }
+  // Residual: Junk-by-score (no global cross-base EXPLICIT map).
+  return tierFromValueScore(modId);
+}
+
+/**
+ * @deprecated Prefer {@link modQualityTierForBase} with a baseId.
+ * Without a base, only valueScore fallback applies (no shared global map).
+ */
+export function modQualityTier(modId: string): ModQualityTier {
+  return modQualityTierForBase(undefined, modId);
 }
 
 export function tierRank(tier: ModQualityTier): number {
@@ -153,17 +245,25 @@ export function tierRank(tier: ModQualityTier): number {
 }
 
 /** Best single-mod tier among a set of mod ids (legacy helper). */
-export function bestTier(modIds: string[]): ModQualityTier {
+export function bestTier(
+  modIds: string[],
+  baseId?: string,
+): ModQualityTier {
   let best: ModQualityTier = "Junk";
   for (const id of modIds) {
-    const t = modQualityTier(id);
+    const t = modQualityTierForBase(baseId, id);
     if (tierRank(t) > tierRank(best)) best = t;
   }
   return best;
 }
 
-export function countTier(modIds: string[], tier: ModQualityTier): number {
-  return modIds.filter((id) => modQualityTier(id) === tier).length;
+export function countTier(
+  modIds: string[],
+  tier: ModQualityTier,
+  baseId?: string,
+): number {
+  return modIds.filter((id) => modQualityTierForBase(baseId, id) === tier)
+    .length;
 }
 
 /**
@@ -187,10 +287,13 @@ export const SIDE_SCORE: Record<SidePattern, number> = {
   Empty: 0,
 };
 
-export function classifySide(modIds: string[]): SidePattern {
-  const nS = countTier(modIds, "S");
-  const nA = countTier(modIds, "A");
-  const nB = countTier(modIds, "B");
+export function classifySide(
+  modIds: string[],
+  baseId?: string,
+): SidePattern {
+  const nS = countTier(modIds, "S", baseId);
+  const nA = countTier(modIds, "A", baseId);
+  const nB = countTier(modIds, "B", baseId);
   if (nS >= 2) return "SS";
   if (nS >= 1 && nA >= 1) return "SA";
   if (nS >= 1) return "S";
@@ -221,16 +324,16 @@ export function splitAffixSides(modIds: string[]): {
  *   S|A → +20 (divine synergy; strat TRADE_DIVINE)
  *   A|A → +8  (solid double-A without an S)
  */
-export function itemComboScore(modIds: string[]): number {
+export function itemComboScore(modIds: string[], baseId?: string): number {
   const { prefixes, suffixes } = splitAffixSides(modIds);
-  const p = classifySide(prefixes);
-  const s = classifySide(suffixes);
+  const p = classifySide(prefixes, baseId);
+  const s = classifySide(suffixes, baseId);
   let score = SIDE_SCORE[p] + SIDE_SCORE[s];
 
-  const pS = countTier(prefixes, "S");
-  const pA = countTier(prefixes, "A");
-  const sS = countTier(suffixes, "S");
-  const sA = countTier(suffixes, "A");
+  const pS = countTier(prefixes, "S", baseId);
+  const pA = countTier(prefixes, "A", baseId);
+  const sS = countTier(suffixes, "S", baseId);
+  const sA = countTier(suffixes, "A", baseId);
 
   if (pS >= 1 && sS >= 1) score += 25;
   else if ((pS >= 1 && sA >= 1) || (sS >= 1 && pA >= 1)) score += 20;
@@ -260,6 +363,7 @@ export function comboScoreToRareTier(
 /** Multi-affix rare classification (2p+2s aware). */
 export function classifyModCombo(
   modIds: string[],
+  baseId?: string,
 ): {
   prefixes: string[];
   suffixes: string[];
@@ -269,14 +373,23 @@ export function classifyModCombo(
   rareTier: "S" | "A" | "B" | "Trash";
 } {
   const { prefixes, suffixes } = splitAffixSides(modIds);
-  const score = itemComboScore(modIds);
+  const score = itemComboScore(modIds, baseId);
+  let rareTier = comboScoreToRareTier(score);
+  // Temple survey 2026-08-12: only crystal is premium — any rare with
+  // temple_crystal_t1 is MDP S so alch P(S) ≈ P(crystal on rare).
+  if (
+    baseId === "temple_tablet" &&
+    modIds.includes("temple_crystal_t1")
+  ) {
+    rareTier = "S";
+  }
   return {
     prefixes,
     suffixes,
-    prefixSide: classifySide(prefixes),
-    suffixSide: classifySide(suffixes),
+    prefixSide: classifySide(prefixes, baseId),
+    suffixSide: classifySide(suffixes, baseId),
     score,
-    rareTier: comboScoreToRareTier(score),
+    rareTier,
   };
 }
 

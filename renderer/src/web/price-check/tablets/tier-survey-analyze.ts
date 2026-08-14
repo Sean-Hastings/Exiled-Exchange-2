@@ -1,4 +1,4 @@
-import { modQualityTier, type SidePattern } from "./mod-tiers";
+import { modQualityTierForBase, type SidePattern } from "./mod-tiers";
 import type {
   SurveyObservation,
   TierSurveyAnalysis,
@@ -28,13 +28,21 @@ export function computeOctave(
   return { octave, octaveRound: Math.round(octave) };
 }
 
-export function coarsePattern(modIds: string[]): string {
+export function coarsePattern(modIds: string[], baseId?: string): string {
   if (!modIds.length) return "anchor";
-  if (modIds.length === 1) return `solo_${modQualityTier(modIds[0])}`;
+  if (modIds.length === 1) {
+    return `solo_${modQualityTierForBase(baseId, modIds[0])}`;
+  }
 
-  const nS = modIds.filter((id) => modQualityTier(id) === "S").length;
-  const nA = modIds.filter((id) => modQualityTier(id) === "A").length;
-  const nB = modIds.filter((id) => modQualityTier(id) === "B").length;
+  const nS = modIds.filter(
+    (id) => modQualityTierForBase(baseId, id) === "S",
+  ).length;
+  const nA = modIds.filter(
+    (id) => modQualityTierForBase(baseId, id) === "A",
+  ).length;
+  const nB = modIds.filter(
+    (id) => modQualityTierForBase(baseId, id) === "B",
+  ).length;
   if (nS >= 2) return "SS";
   if (nS >= 1 && nA >= 1) return "SA";
   if (nS >= 1) return "S";
@@ -65,7 +73,7 @@ export function analyzeTierSurvey(doc: TierSurveyDocument): TierSurveyAnalysis {
   const byPatternMap = new Map<string, number[]>();
   for (const o of priced) {
     if (o.kind === "anchor-dump") continue;
-    const pat = coarsePattern(o.modIds);
+    const pat = coarsePattern(o.modIds, doc.baseId);
     const arr = byPatternMap.get(pat) ?? [];
     if (o.octave != null) arr.push(o.octave);
     else if (dump > 0) {
@@ -79,7 +87,7 @@ export function analyzeTierSurvey(doc: TierSurveyDocument): TierSurveyAnalysis {
   const sellByPat = new Map<string, number[]>();
   for (const o of priced) {
     if (o.kind === "anchor-dump") continue;
-    const pat = coarsePattern(o.modIds);
+    const pat = coarsePattern(o.modIds, doc.baseId);
     const arr = sellByPat.get(pat) ?? [];
     arr.push(o.sellEx);
     sellByPat.set(pat, arr);

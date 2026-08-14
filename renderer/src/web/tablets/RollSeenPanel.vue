@@ -185,7 +185,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { TABLET_BASES, TABLET_MOD_WEIGHTS } from "@/web/price-check/tablets/mod-weights";
-import { modQualityTier } from "@/web/price-check/tablets/mod-tiers";
+import { modQualityTierForBase } from "@/web/price-check/tablets/mod-tiers";
 import {
   aggregateRawSeen,
   attributeModSide,
@@ -287,7 +287,7 @@ const caredMods = computed(() => {
     ...base.allowedPrefixPool,
     ...base.allowedSuffixPool,
   ]) {
-    if (modQualityTier(id) === "Junk") continue;
+    if (modQualityTierForBase(props.baseId, id) === "Junk") continue;
     let side: string;
     try {
       side = attributeModSide(props.baseId, id);
@@ -406,7 +406,7 @@ function runFit() {
   const targets = fitTargetsFromAggregateCells(
     props.baseId,
     agg.cells,
-  ).filter((t) => modQualityTier(t.modId) !== "Junk");
+  ).filter((t) => modQualityTierForBase(props.baseId, t.modId) !== "Junk");
   const snap = fitWeightOverridesFromRates(props.baseId, targets, {
     trashMode: "seed",
     maxIters: 200,

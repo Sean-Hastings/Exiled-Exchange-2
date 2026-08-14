@@ -1,5 +1,5 @@
 import { TABLET_BASES, TABLET_MOD_WEIGHTS } from "./mod-weights";
-import { modQualityTier } from "./mod-tiers";
+import { modQualityTierForBase } from "./mod-tiers";
 
 export interface RegexTargetMod {
   id: string;
@@ -176,18 +176,21 @@ export function buildRareTierJudgementRegexes(
   if (!base) return [];
 
   const pool = [...base.allowedPrefixPool, ...base.allowedSuffixPool];
-  const sMods = pool.filter((id) => modQualityTier(id) === "S");
-  const aMods = pool.filter((id) => modQualityTier(id) === "A");
-  const bMods = pool.filter((id) => modQualityTier(id) === "B");
+  const sMods = pool.filter((id) => modQualityTierForBase(baseId, id) === "S");
+  const aMods = pool.filter((id) => modQualityTierForBase(baseId, id) === "A");
+  const bMods = pool.filter((id) => modQualityTierForBase(baseId, id) === "B");
 
   return [
     {
       tier: "S",
       regex: regexForModIds(sMods),
       modIds: sMods,
-      note: aMods.length
-        ? "S-quality. Solo → MDP A ask; true MDP S needs S+A/SS support"
-        : "S-quality. Solo → MDP A (no A-support mods on this base)",
+      note:
+        baseId === "temple_tablet"
+          ? "S-quality (Temple: crystal → MDP S)"
+          : aMods.length
+            ? "S-quality. Solo → MDP A ask; true MDP S needs S+A/SS support"
+            : "S-quality. Solo → MDP A (no A-support mods on this base)",
     },
     {
       tier: "A",

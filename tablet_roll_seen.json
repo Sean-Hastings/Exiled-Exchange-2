@@ -1,5 +1,54 @@
 {
   "revision": 1,
-  "updatedAt": 0,
-  "batches": []
+  "updatedAt": 1786671071813,
+  "batches": [
+    {
+      "id": "temple-alch-2026-08-12",
+      "baseId": "temple_tablet",
+      "createdAt": 1786492800000,
+      "updatedAt": 1786671071813,
+      "note": "Imported from manual_review_1.json craftSample (2026-08-12). Alchemy rare n=27; affixesPerTablet=4 (2p+2s). item_rarity mapped to junk_item_rarity_t1; item_quantity omitted (map_quantity_* not in temple pools).",
+      "affixesPerTablet": 4,
+      "tablets": 27,
+      "hits": [
+        { "modId": "temple_crystal_t1", "hits": 4 },
+        { "modId": "temple_beacon_pack_t1", "hits": 15 },
+        { "modId": "temple_chest_rare_t1", "hits": 7 },
+        { "modId": "map_pack_size_t2", "hits": 11 },
+        { "modId": "junk_monster_eff_t1", "hits": 8 },
+        { "modId": "junk_item_rarity_t1", "hits": 12 }
+      ]
+    },
+    {
+      "id": "temple-magic-ta-2026-08-12",
+      "baseId": "temple_tablet",
+      "createdAt": 1786492800000,
+      "updatedAt": 1786671071813,
+      "note": "Imported from manual_review_1.json craftSample (2026-08-12). Magic/T+A n=28; affixesPerTablet=2. item_rarity mapped to junk_item_rarity_t1; item_quantity omitted (map_quantity_* not in temple pools).",
+      "affixesPerTablet": 2,
+      "tablets": 28,
+      "hits": [
+        { "modId": "temple_crystal_t1", "hits": 1 },
+        { "modId": "temple_beacon_pack_t1", "hits": 8 },
+        { "modId": "temple_chest_rare_t1", "hits": 3 },
+        { "modId": "map_pack_size_t2", "hits": 5 },
+        { "modId": "junk_monster_eff_t1", "hits": 6 },
+        { "modId": "junk_item_rarity_t1", "hits": 3 }
+      ]
+    },
+    {
+      "id": "temple-chaos-oneaffix-2026-08-12",
+      "baseId": "temple_tablet",
+      "createdAt": 1786492800000,
+      "updatedAt": 1786671071813,
+      "note": "Imported from manual_review_1.json craftSample/chaosSlamSample (2026-08-12). One-affix chaos; n≈32.5 (~30–35 range) stored as tablets=33, suffixTrials=33, prefixTrials=0, crystalHits=1.",
+      "affixesPerTablet": 1,
+      "tablets": 33,
+      "prefixTrials": 0,
+      "suffixTrials": 33,
+      "hits": [
+        { "modId": "temple_crystal_t1", "hits": 1 }
+      ]
+    }
+  ]
 }

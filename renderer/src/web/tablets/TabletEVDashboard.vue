@@ -1015,8 +1015,8 @@ const hotkeyController = Host.onEvent("MAIN->CLIENT::widget-action", (e) => {
 });
 
 watch(tabletMarketCache, () => recompute());
-watch(tabletMarketStatus, (s) => {
-  if (s.state === "ready") recompute();
+watch(tabletMarketStatus, () => {
+  if (tabletMarketStatus.value.state === "ready") recompute();
 });
 
 onMounted(() => {

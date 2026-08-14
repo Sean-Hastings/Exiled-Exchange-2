@@ -180,8 +180,8 @@ export default defineComponent({
       });
     });
 
-    watch(tabletMarketStatus, (s) => {
-      if (s.state !== "loading") return;
+    watch(tabletMarketStatus, () => {
+      if (tabletMarketStatus.value.state !== "loading") return;
       const tablet = widgets.value.find((w) => w.wmType === "tablet-ev");
       if (tablet) show(tablet.wmId);
     });

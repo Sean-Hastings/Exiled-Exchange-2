@@ -12,7 +12,7 @@ export interface RegexTargetMod {
 }
 
 export interface TierJudgementRegex {
-  /** Stash triage label (S / A / B); unmatched → Trash */
+  /** Stash triage label (S / A); unmatched → Trash. B unused. */
   tier: "S" | "A" | "B";
   regex: string;
   modIds: string[];
@@ -160,14 +160,14 @@ function regexForModIds(ids: string[]): string {
 }
 
 /**
- * Per-tier stash regexes for a tablet base (quality S / A / B mods).
+ * Per-tier stash regexes for a tablet base (quality S / A mods).
  *
- * Apply in order S → A → B. Anything that matches none → Trash.
+ * Apply in order S → A. Anything that matches none → Trash/dump.
  *
  * Stash cannot score multi-affix combos, so:
- *   S-quality hit → usually MDP rare A (solo S); true MDP S needs support
- *   A-quality hit → usually MDP rare B
- *   B-quality hit → soft mid (often still dump/reforge economics)
+ *   S-quality hit → MDP rare A (solo S); SS/SA → MDP S
+ *   A-quality hit → dump now (solo A is MDP B, aliased to Trash)
+ *   AA / A|A still MDP A but stash cannot see the pair
  */
 export function buildRareTierJudgementRegexes(
   baseId: string,
@@ -178,7 +178,6 @@ export function buildRareTierJudgementRegexes(
   const pool = [...base.allowedPrefixPool, ...base.allowedSuffixPool];
   const sMods = pool.filter((id) => modQualityTierForBase(baseId, id) === "S");
   const aMods = pool.filter((id) => modQualityTierForBase(baseId, id) === "A");
-  const bMods = pool.filter((id) => modQualityTierForBase(baseId, id) === "B");
 
   return [
     {
@@ -188,23 +187,15 @@ export function buildRareTierJudgementRegexes(
       note:
         baseId === "temple_tablet"
           ? "S-quality (Temple: crystal → MDP S)"
-          : aMods.length
-            ? "S-quality. Solo → MDP A ask; true MDP S needs S+A/SS support"
-            : "S-quality. Solo → MDP A (no A-support mods on this base)",
+          : "S-quality. Solo → MDP A; SS/SA → MDP S",
     },
     {
       tier: "A",
       regex: regexForModIds(aMods),
       modIds: aMods,
       note: aMods.length
-        ? "A-quality. Solo → MDP rare B"
+        ? "A-quality. Solo → dump (MDP B). AA / A|A → MDP A"
         : "No A-quality mods — use S hits as MDP A",
-    },
-    {
-      tier: "B",
-      regex: regexForModIds(bMods),
-      modIds: bMods,
-      note: "B-quality mid band. No S/A/B match → Trash",
     },
   ];
 }

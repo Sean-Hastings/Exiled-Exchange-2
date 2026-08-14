@@ -154,7 +154,7 @@ export interface BaseStrategyExplain {
   expectedRollRevenueEx: number;
   blank: StrategyBreakdown[];
   rare: StrategyBreakdown[];
-  /** Stash triage: S/A/B regexes; unmatched → Trash */
+  /** Stash triage: S/A regexes; unmatched → Trash. B unused. */
   tierRegexes: TierJudgementRegex[];
 }
 
@@ -518,7 +518,7 @@ export class TabletEVEngine {
   }
 
   /**
-   * Debug / inspection: S/A/B/Trash rates + sale, and expected *revenue*
+   * Debug / inspection: S/A/Trash rates + sale, and expected *revenue*
    * for blank + rare policies (MDP continuation values).
    */
   public explainStrategies(baseId: string): BaseStrategyExplain {
@@ -556,21 +556,42 @@ export class TabletEVEngine {
     const sales = alch?.sales;
     const measuredFrac = sales?.measuredFrac ?? 0;
     const tierKind = (tier: (typeof RARE_TIERS)[number]): OutcomeKind =>
-      tier === "S" ? "jackpot" : tier === "Trash" ? "trash" : "hit";
+      tier === "S" ? "jackpot" : tier === "A" ? "hit" : "trash";
 
     const rollOutcomes: OutcomeSlice[] = sales
-      ? RARE_TIERS.map((tier) => {
-          const prob = sales.alchDist[tier];
-          const avgValueEx = sales.uncorrupted[tier];
-          return {
-            kind: tierKind(tier),
-            label: tier + " rare",
-            prob,
-            avgValueEx,
-            revenueEx: prob * avgValueEx,
-            priceSource: sales.uncorruptedSource[tier],
-          };
-        }).filter((o) => o.prob > 1e-9)
+      ? (() => {
+          const merged: Partial<
+            Record<"S" | "A" | "Trash", OutcomeSlice>
+          > = {};
+          for (const tier of RARE_TIERS) {
+            const display = tier === "B" ? "Trash" : tier;
+            const prob = sales.alchDist[tier];
+            const avgValueEx = sales.uncorrupted[tier];
+            const revenueEx = prob * avgValueEx;
+            const prev = merged[display];
+            if (prev) {
+              prev.prob += prob;
+              prev.revenueEx += revenueEx;
+              prev.avgValueEx =
+                prev.prob > 0 ? prev.revenueEx / prev.prob : prev.avgValueEx;
+            } else {
+              merged[display] = {
+                kind: tierKind(display),
+                label: display + " rare",
+                prob,
+                avgValueEx,
+                revenueEx,
+                priceSource:
+                  display === "Trash"
+                    ? sales.uncorruptedSource.Trash
+                    : sales.uncorruptedSource[tier],
+              };
+            }
+          }
+          return (["S", "A", "Trash"] as const)
+            .map((k) => merged[k])
+            .filter((o): o is OutcomeSlice => !!o && o.prob > 1e-9);
+        })()
       : [];
     const expectedRollRevenueEx = rollOutcomes.reduce(
       (s, o) => s + o.revenueEx,
@@ -649,7 +670,7 @@ export class TabletEVEngine {
         note:
           blankStrat === "Skip-Blanks"
             ? "Do not buy/craft whites"
-            : "MDP blank→rare{S,A,B,Trash}; trash=" +
+            : "MDP blank→rare{S,A,Trash}; trash=" +
               rareSide.Trash +
               " (closed-form until-hit)",
       });

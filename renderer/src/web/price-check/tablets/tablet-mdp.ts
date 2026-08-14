@@ -161,7 +161,8 @@ export function qRareAction(
 }
 
 function defaultCorruptPolicy(): CraftPolicy["corrupt"] {
-  return { S: "List", A: "List", B: "List", Trash: "Dump" };
+  // B is junk filler (priced = Trash); same dump action.
+  return { S: "List", A: "List", B: "Dump", Trash: "Dump" };
 }
 
 function emptyActionMarginals(): Record<RareAction, number> {
@@ -293,8 +294,8 @@ export function solveOptimalRarePolicy(sales: TierSaleTable): {
 }
 
 /**
- * Default "sensible" policy: list S/A/B, chaos trash (until hit), list corrupt.
- * Prefer {@link solveOptimalRarePolicy} for recommendations.
+ * Default "sensible" policy: list S/A, chaos B+Trash (until hit).
+ * B is junk filler — same action as Trash. Prefer {@link solveOptimalRarePolicy}.
  */
 export function defaultPolicy(blank: BlankCraftStrategy = "Scour-Alch"): CraftPolicy {
   return {
@@ -302,7 +303,7 @@ export function defaultPolicy(blank: BlankCraftStrategy = "Scour-Alch"): CraftPo
     rare: {
       S: "List",
       A: "List",
-      B: "List",
+      B: "Chaos",
       Trash: "Chaos",
     },
     corrupt: defaultCorruptPolicy(),
@@ -323,7 +324,7 @@ export function candidatePolicies(): CraftPolicy[] {
     for (const trash of RARE_ACTIONS) {
       out.push({
         blank,
-        rare: { S: "List", A: "List", B: "List", Trash: trash },
+        rare: { S: "List", A: "List", B: trash, Trash: trash },
         corrupt: defaultCorruptPolicy(),
       });
     }
@@ -801,8 +802,6 @@ export function priceTiersFromMeasured(
     : dumpOk
       ? dump
       : Number.NaN;
-  // BENCH: B inherits Trash when unmeasured (OK for now). Reconsider later —
-  // whether B should keep a distinct mid-band seed instead of trash cascade.
   out.B = Number.isFinite(raw.B) ? raw.B : out.Trash;
   out.A = Number.isFinite(raw.A) ? raw.A : out.B;
   out.S = Number.isFinite(raw.S) ? raw.S : out.A;
@@ -811,6 +810,9 @@ export function priceTiersFromMeasured(
   if (Number.isFinite(out.S) && out.A > out.S) out.A = out.S;
   if (Number.isFinite(out.A) && out.B > out.A) out.B = out.A;
   if (Number.isFinite(out.B) && out.Trash > out.B) out.Trash = out.B;
+
+  // B is junk filler; priced tiers are S/A only. Always dump (= Trash).
+  out.B = out.Trash;
 
   return out;
 }
@@ -858,11 +860,6 @@ function priceTierSourcesFromMeasured(
   }
 
   const inherited = dumpOk || has("Trash") || has("B") || has("A");
-  const b: PriceSource = has("B")
-    ? own("B")
-    : dumpOk || has("Trash")
-      ? "cascaded"
-      : "measured";
   const a: PriceSource = has("A")
     ? own("A")
     : dumpOk || has("Trash") || has("B")
@@ -874,7 +871,8 @@ function priceTierSourcesFromMeasured(
       ? "cascaded"
       : "measured";
 
-  return { S: s, A: a, B: b, Trash: trash };
+  // B sale aliases Trash; source follows dump.
+  return { S: s, A: a, B: trash, Trash: trash };
 }
 
 /**
@@ -930,6 +928,8 @@ export function buildTierSaleTable(
     baseId,
     market,
     (tier, _prob, sale, source) => {
+      // B is junk filler — do not seed a mid-band; dump via Trash cascade.
+      if (tier === "B") return;
       measuredSales[tier].push(sale);
       measuredSaleSources[tier].push(source);
     },
@@ -942,6 +942,7 @@ export function buildTierSaleTable(
     if (!Number.isFinite(sample.sellEx) || sample.sellEx <= 0) continue;
     if (!sample.modIds?.length) continue;
     const tier = modsToRareTier(sample.modIds, baseId);
+    if (tier === "B") continue;
     measuredSales[tier].push(sample.sellEx);
     measuredSaleSources[tier].push("measured");
   }

@@ -10,19 +10,13 @@ import {
 } from "@/web/price-check/trade/pathofexile-trade";
 import { RATE_LIMIT_RULES } from "@/web/price-check/trade/common";
 import { RateLimiter } from "@/web/price-check/trade/RateLimiter";
-import { TABLET_BASES, TABLET_MOD_WEIGHTS } from "./mod-weights";
+import { TABLET_BASES } from "./mod-weights";
 import { createEmptyMarketCache } from "./default-market";
 import { isFinitePositive } from "./market-sanity";
 import {
   applySabSyncHit,
-  bestProngSellEx,
   buildSabSyncWorklist,
-  expandSoloSAOppositePool,
-  finalizeSoloSCurve,
-  isSoloSProngItem,
 } from "./sab-combo-plan";
-import type { RollPriceAnchor } from "./mod-roll-price-curve";
-import type { TabletModDefinition } from "./tablet-types";
 import {
   BUY_DEPTH_COLD_DEFAULT,
   BUY_DEPTH_HOT,
@@ -75,20 +69,16 @@ import {
 export type { MarketSyncDebug } from "./market-sync-debug";
 
 /** Bump when conversion / estimator semantics change — invalidates persisted cache. */
-export const MARKET_SYNC_REVISION = 24;
+export const MARKET_SYNC_REVISION = 28;
 
-/** Buy blanks: enough depth for buy@N after mixed-currency re-sort. */
+/** Buy blanks: enough depth for buy@N. Exalted-only so API sort ≈ exalt. */
 const BUY_LISTING_SAMPLE = 30;
-/** Second buy leg priced in exalt so API sort ≈ exalt order. */
-const BUY_EXALT_SAMPLE = 25;
 /** Sell comps only need a floor / thin stale sample — not a full book. */
 const SELL_LISTING_SAMPLE = 20;
 const JUNK_LISTING_SAMPLE = 15;
 /** Survey fetch depth — fewer FETCH tokens per search. */
 const SURVEY_LISTING_SAMPLE = 8;
 const FETCH_BATCH = 10;
-/** Sample big enough to skip a second buy-status search. */
-const ONLINE_GOOD_ENOUGH = 8;
 /** HTTP budget; rate-limit wait is excluded from this clock. */
 const TRADE_HTTP_TIMEOUT_MS = 45_000;
 
@@ -491,16 +481,15 @@ function buildSearchTrace(opts: {
  * Buy blanks from the *live* market only.
  *
  * PoE2 trade status labels (official filters):
- * - securable = Instant Buyout (merchant tab / in-game marketplace) — preferred
- * - available = Instant Buyout AND In Person (whisper) — thin-book fallback
+ * - securable = Instant Buyout (merchant tab / in-game marketplace) — default
+ * - available = Instant Buyout AND In Person (whisper) — opt-in fallback
  * - online    = In Person (Online) ONLY — excludes marketplace
  * - any       = includes offline ghosts
  *
- * Prefer securable (in-game Instant Buyout). Fall back to available only when
- * the marketplace book is thin — unless `forceStatus` locks one band (flow
- * probe must re-query the same Instant Buyout book).
- * Trade sorts by *raw* currency amount (1 divine before 50 vaal), so we merge
- * any-currency + exalted-only legs, convert to exalt, then estimate.
+ * Instant Buyout (`securable`) only unless `includeAvailable` is on, then
+ * fall back to `available` when the marketplace book is empty. `forceStatus`
+ * locks one band (flow probe #2 / mkt-only snaps).
+ * One exalted-only SEARCH per snap so API sort ≈ exalt.
  */
 async function searchBuyPriceEx(
   typeName: string,
@@ -515,6 +504,8 @@ async function searchBuyPriceEx(
   opts?: {
     /** Lock to one status band (no fallback). Used by flow probe #2 / mkt-only snaps. */
     forceStatus?: "securable" | "available";
+    /** When true and no forceStatus, try available if securable is empty. */
+    includeAvailable?: boolean;
   },
 ): Promise<{
   price: number;
@@ -545,99 +536,38 @@ async function searchBuyPriceEx(
   ];
   const bands = opts?.forceStatus
     ? allBands.filter((b) => b.status === opts.forceStatus)
-    : allBands;
-
-  let best: {
-    price: number;
-    sampleSize: number;
-    status: "securable" | "available";
-    mix: string;
-    priced: PricedListing[];
-  } | null = null;
+    : opts?.includeAvailable
+      ? allBands
+      : allBands.filter((b) => b.status === "securable");
 
   for (const band of bands) {
-    const legs: Array<{
-      priceCurrency?: string;
-      sample: number;
-      tag: string;
-    }> = [
-      {
-        sample: BUY_LISTING_SAMPLE,
-        tag: "any-ccy (API raw-amount sort)",
-      },
-      {
-        priceCurrency: "exalted",
-        sample: BUY_EXALT_SAMPLE,
-        tag: "exalted-only (sort≈exalt)",
-      },
-    ];
-
-    const mergedRows: ListingDebugRow[] = [];
-    const seen = new Set<string>();
-
-    for (const leg of legs) {
-      const body = blankTabletQuery(
-        typeName,
-        band.status,
-        leg.priceCurrency,
-      );
-      const hit = await searchPricedListings(
-        body,
-        leagueId,
-        fx,
-        progress,
-        `${ctx} ${band.status}${leg.priceCurrency ? ` ${leg.priceCurrency}` : ""}`,
-        isCancelled,
-        buyFloor,
-        buyCeiling,
-        leg.sample,
-      );
-      const legPriced = hit.priced;
-      const legPrice = estimateBuyPriceEx(legPriced, buyDepth);
-      traces.push(
-        buildSearchTrace({
-          kind: band.kind,
-          label: `${ctx} ${band.status} · ${leg.tag}`,
-          typeName,
-          statusOption: band.status,
-          queryBody: body,
-          queryId: hit.queryId,
-          totalHits: hit.totalHits,
-          rows: hit.rows,
-          priced: legPriced,
-          estimate: legPrice,
-          estimateNote: `${buyEstimateNote(legPriced.length, buyDepth)} · ${leg.tag}`,
-          floorEx: buyFloor,
-          ceilingEx: buyCeiling,
-        }),
-      );
-
-      for (const row of hit.rows) {
-        const key = `${row.amount}|${row.currency}|${row.indexedAt ?? ""}|${row.keep}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        mergedRows.push(row);
-      }
-    }
-
-    const priced = keptToPriced(mergedRows);
+    const body = blankTabletQuery(typeName, band.status, "exalted");
+    const hit = await searchPricedListings(
+      body,
+      leagueId,
+      fx,
+      progress,
+      `${ctx} ${band.status} exalted`,
+      isCancelled,
+      buyFloor,
+      buyCeiling,
+      BUY_LISTING_SAMPLE,
+    );
+    const priced = hit.priced;
     const price = estimateBuyPriceEx(priced, buyDepth);
     traces.push(
       buildSearchTrace({
         kind: band.kind,
-        label: `${ctx} ${band.status} · merged any+exalt (${band.note})`,
+        label: `${ctx} ${band.status} · exalted-only (sort≈exalt)`,
         typeName,
         statusOption: band.status,
-        rows: mergedRows
-          .slice()
-          .sort(
-            (a, b) =>
-              (a.priceEx ?? Number.POSITIVE_INFINITY) -
-              (b.priceEx ?? Number.POSITIVE_INFINITY),
-          ),
+        queryBody: body,
+        queryId: hit.queryId,
+        totalHits: hit.totalHits,
+        rows: hit.rows,
         priced,
         estimate: price,
-        estimateNote: `${buyEstimateNote(priced.length, buyDepth)} · merged (ex-sorted display)`,
+        estimateNote: `${buyEstimateNote(priced.length, buyDepth)} · exalted-only (${band.note})`,
         floorEx: buyFloor,
         ceilingEx: buyCeiling,
       }),
@@ -645,28 +575,17 @@ async function searchBuyPriceEx(
 
     if (price == null || !priced.length) continue;
 
-    const candidate = {
+    return {
       price,
       sampleSize: priced.length,
       status: band.status,
       mix: currencyMixSummary(priced),
       priced,
+      traces,
     };
-
-    if (
-      priced.length >= buyDepth ||
-      priced.length >= ONLINE_GOOD_ENOUGH
-    ) {
-      return { ...candidate, traces };
-    }
-
-    if (!best || candidate.sampleSize > best.sampleSize) {
-      best = candidate;
-    }
   }
 
-  if (!best) return null;
-  return { ...best, traces };
+  return null;
 }
 
 async function sleepCancellable(
@@ -770,8 +689,8 @@ async function searchSellPriceEx(
 }
 
 /**
- * Prefer in-game Instant Buyout (`securable`); fall back to mixed `available`
- * only when the marketplace book yields no usable sell estimate.
+ * Instant Buyout (`securable`) only unless `includeAvailable`, then fall back
+ * to mixed `available` when the marketplace book yields no usable sell.
  */
 async function searchSellPricePreferMarket(
   buildBody: (
@@ -785,9 +704,13 @@ async function searchSellPricePreferMarket(
   isCancelled: () => boolean,
   sellCeiling: number,
   sample = SELL_LISTING_SAMPLE,
+  includeAvailable = false,
 ): Promise<{ price: number | null; trace: SearchDebugTrace }> {
+  const statuses = includeAvailable
+    ? (["securable", "available"] as const)
+    : (["securable"] as const);
   let fallback: { price: number | null; trace: SearchDebugTrace } | null = null;
-  for (const status of ["securable", "available"] as const) {
+  for (const status of statuses) {
     const hit = await searchSellPriceEx(
       buildBody(status),
       leagueId,
@@ -1113,6 +1036,11 @@ export async function syncTabletMarketFromTrade(opts?: {
   flowProbeMs?: number;
   /** Set false to skip re-query (single snapshot, unknown regime → warm depth). */
   flowProbe?: boolean;
+  /**
+   * When true, fall back to in-person / trade-site (`available`) if Instant
+   * Buyout (`securable`) is empty. Default off.
+   */
+  includeAvailable?: boolean;
 }): Promise<MarketSyncResult> {
   const combosPerBase = opts?.combosPerBase ?? 40;
   const progress = opts?.onProgress ?? (() => undefined);
@@ -1124,6 +1052,7 @@ export async function syncTabletMarketFromTrade(opts?: {
   const coldBuyDepth = buyCountB;
   const flowProbeMs = opts?.flowProbeMs ?? FLOW_PROBE_MS;
   const flowProbeEnabled = opts?.flowProbe !== false;
+  const includeAvailable = opts?.includeAvailable === true;
   const filterIds = opts?.baseIds?.length
     ? new Set(opts.baseIds.filter((id) => !!TABLET_BASES[id]))
     : null;
@@ -1275,7 +1204,7 @@ export async function syncTabletMarketFromTrade(opts?: {
     // exist during middle work / partial cancel. Probe#2 overwrites with
     // snap2 + classified regime for the final market.
 
-    // Phase 1 — Flow probe #1 for every base (securable; thin → available, skip #2).
+    // Phase 1 — Flow probe #1 for every base (securable; opt-in available fallback).
     let baseIdx = 0;
     for (const base of bases) {
       if (isCancelled()) throw new Error("Market sync cancelled");
@@ -1311,19 +1240,31 @@ export async function syncTabletMarketFromTrade(opts?: {
                 coldBuyDepth,
                 { forceStatus: "securable" },
               )
-            : null;
-          // No marketplace book → price from mixed available, skip flow (#2).
-          if (!hit) {
+            : await searchBuyPriceEx(
+                typeName,
+                leagueId,
+                fx,
+                progress,
+                `${ctx} #1`,
+                isCancelled,
+                buyFloor,
+                buyCeiling,
+                coldBuyDepth,
+                { includeAvailable },
+              );
+          // No marketplace book → optional in-person fallback, skip flow (#2).
+          if (!hit && flowProbeEnabled && includeAvailable) {
             hit = await searchBuyPriceEx(
               typeName,
               leagueId,
               fx,
               progress,
-              flowProbeEnabled ? `${ctx} #1 fallback` : `${ctx} #1`,
+              `${ctx} #1 fallback`,
               isCancelled,
               buyFloor,
               buyCeiling,
               coldBuyDepth,
+              { forceStatus: "available" },
             );
           }
           if (hit) {
@@ -1395,6 +1336,7 @@ export async function syncTabletMarketFromTrade(opts?: {
         isCancelled,
         sellCeiling,
         JUNK_LISTING_SAMPLE,
+        includeAvailable,
       );
       trace.kind = "sell-junk";
       comboDebug.push({
@@ -1410,7 +1352,7 @@ export async function syncTabletMarketFromTrade(opts?: {
     }
 
     let comboDone = 0;
-    // Closed S/A/B plan — run all planned searches (safety max via combosPerBase)
+    // Closed SAB sell worklist (S/A solos, SS/SA/AA duos, all-S 3/4; no SB)
     const plans = bases.map((base) => ({
       base,
       work: buildSabSyncWorklist(base.id, combosPerBase),
@@ -1418,26 +1360,6 @@ export async function syncTabletMarketFromTrade(opts?: {
     const comboTotal = plans.reduce((n, p) => n + p.work.length, 0);
     for (const { base, work } of plans) {
       const typeName = tradeTypeNamesForBase(base)[0];
-
-      // Buffer solo-S prong anchors until all prongs for a mod complete, then fit once.
-      type ProngBuf = {
-        mod: TabletModDefinition;
-        anchors: RollPriceAnchor[];
-        remaining: number;
-      };
-      const prongBuf = new Map<string, ProngBuf>();
-      for (const item of work) {
-        if (!isSoloSProngItem(item)) continue;
-        const modId = item.modIds[0];
-        if (!modId) continue;
-        const mod = TABLET_MOD_WEIGHTS[modId];
-        if (!mod) continue;
-        const prev = prongBuf.get(modId);
-        if (prev) prev.remaining++;
-        else {
-          prongBuf.set(modId, { mod, anchors: [], remaining: 1 });
-        }
-      }
 
       for (const item of work) {
         if (isCancelled()) throw new Error("Market sync cancelled");
@@ -1464,6 +1386,8 @@ export async function syncTabletMarketFromTrade(opts?: {
           typeName,
           isCancelled,
           sellCeiling,
+          SELL_LISTING_SAMPLE,
+          includeAvailable,
         );
         comboDebug.push({
           baseId: base.id,
@@ -1472,33 +1396,6 @@ export async function syncTabletMarketFromTrade(opts?: {
           finalSell: price,
           search: trace,
         });
-
-        if (isSoloSProngItem(item)) {
-          const modId = item.modIds[0]!;
-          const buf = prongBuf.get(modId);
-          if (
-            buf &&
-            price != null &&
-            isFinitePositive(price) &&
-            item.prongRoll != null
-          ) {
-            buf.anchors.push({ roll: item.prongRoll, sellEx: price });
-            stats.combosPriced++;
-          }
-          if (buf) {
-            buf.remaining--;
-            if (buf.remaining <= 0) {
-              if (!finalizeSoloSCurve(market, base.id, buf.mod, buf.anchors)) {
-                const best = bestProngSellEx(buf.anchors);
-                if (Number.isFinite(best)) {
-                  expandSoloSAOppositePool(market, base.id, buf.mod, best);
-                }
-              }
-              prongBuf.delete(modId);
-            }
-          }
-          continue;
-        }
 
         if (price != null && isFinitePositive(price)) {
           applySabSyncHit(market, base.id, item, price);
@@ -1653,16 +1550,17 @@ export async function syncTabletMarketFromTrade(opts?: {
   const scopeLabel = filterIds
     ? bases.map((b) => b.name.replace(/ Tablet$/i, "")).join("+")
     : null;
-  const sCurveCount = Object.keys(market.modRollCurves ?? {}).length;
+  const listingTag = includeAvailable ? "+whisper" : "mkt-only";
   const sourceParts = [
     `r${MARKET_SYNC_REVISION}`,
     scopeLabel ? `only:${scopeLabel}` : null,
     stats.currenciesPriced ? "ninja orbs" : null,
     stats.basesPriced
-      ? `${stats.basesPriced} bases(mean@hot${BUY_DEPTH_HOT}/B${buyCountB}/warm${BUY_DEPTH_N}${flowProbeEnabled ? "+flow(mkt)" : ""},10u,mkt-first)`
+      ? `${stats.basesPriced} bases(mean@hot${BUY_DEPTH_HOT}/B${buyCountB}/warm${BUY_DEPTH_N}${flowProbeEnabled ? "+flow" : ""},10u,${listingTag},p65)`
       : null,
-    stats.combosPriced ? `${stats.combosPriced} sab-combos(sell,mkt-first)` : null,
-    sCurveCount ? `+S-curve×${sCurveCount}` : null,
+    stats.combosPriced
+      ? `${stats.combosPriced} SAB-combos(sell,${listingTag},p65,noSB)`
+      : null,
     `${exaltPerChaos.toFixed(0)}ex/c`,
     `${exaltPerDivine.toFixed(0)}ex/div`,
   ].filter(Boolean);

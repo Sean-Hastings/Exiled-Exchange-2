@@ -4,22 +4,22 @@ import { isTradeQueryableStatId } from "./tier-survey-plan";
 import {
   buildModRollPriceCurve,
   modRollCurveKey,
-  rollSampleProngs,
+  rollAtPercentile65,
   type RollPriceAnchor,
 } from "./mod-roll-price-curve";
 import type { TabletModDefinition } from "./tablet-types";
 import type { ModQualityTier } from "./strat-types";
 import type { MarketPriceCache } from "./tablet-ev-calculator";
 
-/** S/A/B quality mods — Junk excluded. B demotion / membership bench later. */
-const SAB_QUALITIES = new Set<ModQualityTier>(["S", "A", "B"]);
+/** S/A quality mods — Junk and B excluded from the sell worklist. */
+const SAB_QUALITIES = new Set<ModQualityTier>(["S", "A"]);
 
 export type SabSyncKind = "solo" | "duo" | "triple" | "quad";
 
 export interface SabTradeStat {
   id: string;
   min?: number;
-  /** Exact roll when min===max (solo S prong samples). */
+  /** Exact roll when min===max (65th-percentile sample). */
   max?: number;
 }
 
@@ -27,11 +27,11 @@ export interface SabSyncWorkItem {
   kind: SabSyncKind;
   /** Canonical mod ids (tradeStatId-collapsed). */
   modIds: string[];
-  /** Debug key: `__solo__:id`, `__solo_prong__:id@roll`, or `id+id+…`. */
+  /** Debug key: `__solo__:id` or `id+id+…`. */
   comboKey: string;
   /** Deduped trade filters for the search body. */
   stats: SabTradeStat[];
-  /** Exact roll for solo S multi-prong sampling. */
+  /** Exact 65th-percentile roll for solo queries. */
   prongRoll?: number;
 }
 
@@ -47,17 +47,28 @@ export function preferModForSharedTradeStat(
   return a.valueScore >= b.valueScore ? a : b;
 }
 
-function tradeMin(m: TabletModDefinition): number | undefined {
-  if (Number.isFinite(m.minValue) && m.minValue > 0) return Math.ceil(m.minValue);
-  return undefined;
+function exactRollStat(m: TabletModDefinition, roll?: number): SabTradeStat {
+  const v = roll ?? rollAtPercentile65(m.minValue, m.maxValue);
+  if (Number.isFinite(v)) return { id: m.tradeStatId, min: v, max: v };
+  return { id: m.tradeStatId };
 }
 
-function isRollableRange(m: TabletModDefinition): boolean {
-  return (
-    Number.isFinite(m.minValue) &&
-    Number.isFinite(m.maxValue) &&
-    m.maxValue > m.minValue
-  );
+function qualityOf(modId: string, baseId?: string): ModQualityTier {
+  return modQualityTierForBase(baseId, modId);
+}
+
+function isPremiumQuality(modId: string, baseId?: string): boolean {
+  const q = qualityOf(modId, baseId);
+  return q === "S" || q === "A";
+}
+
+/** SS/SA/AA only. Drop SB, AB, and BB. */
+function duoPairAllowed(
+  a: TabletModDefinition,
+  b: TabletModDefinition,
+  baseId?: string,
+): boolean {
+  return isPremiumQuality(a.id, baseId) && isPremiumQuality(b.id, baseId);
 }
 
 /** Collapse mods that share a tradeStatId; drop unqueryable stats. */
@@ -97,14 +108,6 @@ function statsSignature(stats: SabTradeStat[]): string {
     .join("|");
 }
 
-export function soloProngComboKey(modId: string, roll: number): string {
-  return `__solo_prong__:${modId}@${roll}`;
-}
-
-export function isSoloSProngItem(item: SabSyncWorkItem): boolean {
-  return item.kind === "solo" && item.prongRoll != null;
-}
-
 function workItemFromMods(
   mods: TabletModDefinition[],
   opts?: { prongRoll?: number },
@@ -122,30 +125,26 @@ function workItemFromMods(
           ? "triple"
           : "quad";
   const modIds = mods.map((m) => m.id).sort();
-  const prongRoll = opts?.prongRoll;
+  const prongRoll =
+    opts?.prongRoll ??
+    (kind === "solo"
+      ? rollAtPercentile65(mods[0]!.minValue, mods[0]!.maxValue)
+      : undefined);
   const comboKey =
-    kind === "solo"
-      ? prongRoll != null
-        ? soloProngComboKey(mods[0]!.id, prongRoll)
-        : `__solo__:${mods[0]!.id}`
-      : modIds.join("+");
+    kind === "solo" ? `__solo__:${mods[0]!.id}` : modIds.join("+");
   return {
     kind,
     modIds,
     comboKey,
     prongRoll,
-    stats: collapsed.map((m) => {
-      if (prongRoll != null) {
-        return { id: m.tradeStatId, min: prongRoll, max: prongRoll };
-      }
-      const min = tradeMin(m);
-      return min != null ? { id: m.tradeStatId, min } : { id: m.tradeStatId };
-    }),
+    stats: collapsed.map((m) =>
+      exactRollStat(m, kind === "solo" ? prongRoll : undefined),
+    ),
   };
 }
 
 /**
- * M = quality S/A/B on this base (Junk excluded). Collapse shared tradeStatIds
+ * M = quality S/A on this base (Junk and B excluded). Collapse shared tradeStatIds
  * (e.g. pack_t1/t2) to the preferred representative before enumerating.
  */
 export function sabModsForBase(baseId: string): TabletModDefinition[] {
@@ -176,13 +175,15 @@ function combinations<T>(arr: T[], k: number): T[][] {
 }
 
 /**
- * Enumerate trade-legal solos/duos/triples/(small) quads among M.
- * Solo S with a rollable range emits lo/mid/hi prongs (exact min=max).
- * Solo A/B stay flat at ceil(min). Duos+ unchanged (flat at mins).
- * No Junk. Affix cap ≤2p and ≤2s. Shared tradeStatIds already collapsed in M.
+ * Enumerate trade-legal SAB sells among M (Junk and B already excluded).
  *
- * SS note: no joint 2D roll curve — independent S solos use E[p] expand;
- * SS duos remain flat measured samples.
+ * Worklist:
+ * - Solos with quality S or A (not B)
+ * - Duos: both mods S or A (AA, SA, SS). Drop SB, AB, and BB.
+ * - Affix-legal all-S 2p1s / 1p2s / 2p2s only (no mixed triples/quads)
+ *
+ * Every filter uses the 65th-percentile exact roll `{ min: v, max: v }`.
+ * Affix cap ≤2p and ≤2s. Shared tradeStatIds already collapsed in M.
  */
 export function enumerateSabCombos(
   M: TabletModDefinition[],
@@ -202,20 +203,16 @@ export function enumerateSabCombos(
     out.push(item);
   };
 
-  for (const m of M) {
-    const q = baseId ? modQualityTierForBase(baseId, m.id) : undefined;
-    if (q === "S" && isRollableRange(m)) {
-      for (const v of rollSampleProngs(m.minValue, m.maxValue)) {
-        push([m], { prongRoll: v });
-      }
-    } else {
-      push([m]);
-    }
+  const sMods = M.filter((m) => qualityOf(m.id, baseId) === "S");
+  const premiumSolos = M.filter((m) => isPremiumQuality(m.id, baseId));
+
+  for (const m of premiumSolos) push([m]);
+  for (const pair of combinations(M, 2)) {
+    if (duoPairAllowed(pair[0]!, pair[1]!, baseId)) push(pair);
   }
-  for (const pair of combinations(M, 2)) push(pair);
-  for (const trip of combinations(M, 3)) push(trip);
-  if (M.length <= 8) {
-    for (const quad of combinations(M, 4)) push(quad);
+  for (const trip of combinations(sMods, 3)) push(trip);
+  if (sMods.length <= 8) {
+    for (const quad of combinations(sMods, 4)) push(quad);
   }
 
   out.sort((a, b) => {
@@ -229,8 +226,8 @@ export function enumerateSabCombos(
 }
 
 /**
- * Closed worklist: all trade-legal solos/duos/triples/(small) quads among M.
- * No Junk. Affix cap ≤2p and ≤2s.
+ * Closed worklist: S/A solos, SS/SA/AA duos, all-S triples/quads.
+ * No Junk, no SB/AB/BB. Affix cap ≤2p and ≤2s.
  */
 export function buildSabSyncWorklist(
   baseId: string,
@@ -352,11 +349,10 @@ export function bestProngSellEx(anchors: RollPriceAnchor[]): number {
 
 /**
  * Write a successful SAB search into cache:
- * - Solo S/A: expand floor across entire opposite pool (1p1s grid).
- * - Solo B: measuredAffixSamples only (no junk×B pollution).
+ * - Solo S/A: expand the 65th-pct price across entire opposite pool (1p1s grid).
+ * - Solo B: unused no-op (worklist only searches S/A combos).
  * - Cross-side duo: stampMeasuredCombo(p+s).
  * - Same-side / triple / quad: measuredAffixSamples.
- * - Solo S prongs: no-op here — use finalizeSoloSCurve after all prongs.
  */
 export function applySabSyncHit(
   market: MarketPriceCache,
@@ -365,8 +361,6 @@ export function applySabSyncHit(
   price: number,
 ) {
   if (!Number.isFinite(price) || price <= 0) return;
-  // Prongs are buffered and finalized once — do not stamp each onto the grid
-  if (isSoloSProngItem(item)) return;
 
   const base = TABLET_BASES[baseId];
   if (!base) return;
@@ -383,8 +377,7 @@ export function applySabSyncHit(
       expandSoloSAOppositePool(market, baseId, m, price);
       return;
     }
-    // Solo B — sample only
-    pushMeasuredAffixSample(market, baseId, [m.id], price);
+    // Solo B — unused no-op (worklist drops B-only combos)
     return;
   }
 

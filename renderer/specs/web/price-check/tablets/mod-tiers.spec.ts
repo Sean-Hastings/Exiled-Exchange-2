@@ -66,6 +66,9 @@ describe("multi-affix combo tiering", () => {
     expect(
       modQualityTierForBase(breach, "breach_splinter_qty_t2"),
     ).toBe("Junk");
+    expect(modQualityTierForBase(breach, "junk_item_rarity_t1")).toBe(
+      "Junk",
+    );
   });
 
   it("solo S scores above double A (same MDP bucket A)", () => {

@@ -48,6 +48,21 @@ export function rollSampleProngs(minValue: number, maxValue: number): number[] {
   return [lo, mid, hi];
 }
 
+/**
+ * Discrete 65th-percentile roll. 1-based index ceil(0.65 · n).
+ * n=1→1, 2→2, 3→2, 4→3, 5→4, 6→4. Crystal [5,10] → 8.
+ * If min=max, that roll.
+ */
+export function rollAtPercentile65(minValue: number, maxValue: number): number {
+  const rolls = discreteRolls(minValue, maxValue);
+  if (!rolls.length) {
+    const v = Number.isFinite(minValue) ? Math.round(minValue) : Number.NaN;
+    return v;
+  }
+  const idx = Math.ceil(0.65 * rolls.length); // 1-based
+  return rolls[idx - 1]!;
+}
+
 /** Cache key for a per-base live mod roll curve. */
 export function modRollCurveKey(baseId: string, modId: string): string {
   return `${baseId}/${modId}`;

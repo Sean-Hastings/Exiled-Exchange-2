@@ -4,6 +4,7 @@ import {
   expectedSellFromCurve,
   fitExponentialRollCurve,
   priceAtRoll,
+  rollAtPercentile65,
   rollSampleProngs,
 } from "@/web/price-check/tablets/mod-roll-price-curve";
 import {
@@ -14,6 +15,17 @@ import {
 describe("mod-roll-price-curve", () => {
   it("rollSampleProngs for crystal [5,10] is lo/mid/hi", () => {
     expect(rollSampleProngs(5, 10)).toEqual([5, 7, 10]);
+  });
+
+  it("rollAtPercentile65 uses 1-based ceil(0.65·n)", () => {
+    expect(rollAtPercentile65(5, 5)).toBe(5);
+    expect(rollAtPercentile65(1, 1)).toBe(1); // n=1 → 1
+    expect(rollAtPercentile65(1, 2)).toBe(2); // n=2 → 2
+    expect(rollAtPercentile65(1, 3)).toBe(2); // n=3 → 2
+    expect(rollAtPercentile65(1, 4)).toBe(3); // n=4 → 3
+    expect(rollAtPercentile65(1, 5)).toBe(4); // n=5 → 4
+    expect(rollAtPercentile65(1, 6)).toBe(4); // n=6 → 4
+    expect(rollAtPercentile65(5, 10)).toBe(8); // crystal
   });
 
   it("fits exp from measured anchors without inventing a mid", () => {

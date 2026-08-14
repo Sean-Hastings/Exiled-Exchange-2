@@ -20,6 +20,8 @@ const BUY_COUNT_B_KEY = "ee2-tablet-buy-count-b";
 /** Legacy patience key — read-only migration fallback; never write. */
 const BUY_PATIENCE_KEY = "ee2-tablet-buy-patience-depth";
 const CRAFT_COUNT_C_KEY = "ee2-tablet-craft-count-c";
+/** Include in-person / trade-site (`available`) listings. Default off. */
+const INCLUDE_WHISPER_KEY = "ee2-tablet-include-whisper";
 
 const CRAFT_COUNT_C_DEFAULT = 20;
 
@@ -43,6 +45,8 @@ export interface TabletMarketSyncOpts {
   flowProbeMs?: number;
   /** Set false to skip the second buy snapshot. */
   flowProbe?: boolean;
+  /** Include in-person / trade-site listings (`available` fallback). */
+  includeAvailable?: boolean;
 }
 
 function clampBuyB(n: number): number {
@@ -92,11 +96,22 @@ function loadCraftCountC(): number {
   }
 }
 
+function loadIncludeWhisper(): boolean {
+  try {
+    return localStorage.getItem(INCLUDE_WHISPER_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
 /** Buy count B — mean of cheapest B; persisted under ee2-tablet-buy-count-b. */
 export const tabletBuyCountB = shallowRef(loadBuyCountB());
 
 /** Craft count C — batch risk size only; does not enter buy price. */
 export const tabletCraftCountC = shallowRef(loadCraftCountC());
+
+/** Include in-person / trade-site listings. Default off (Instant Buyout only). */
+export const tabletIncludeWhisper = shallowRef(loadIncludeWhisper());
 
 /**
  * @deprecated Alias of tabletBuyCountB for one revision.
@@ -124,6 +139,15 @@ export function setTabletCraftCountC(count: number) {
   tabletCraftCountC.value = next;
   try {
     localStorage.setItem(CRAFT_COUNT_C_KEY, String(next));
+  } catch {
+    /* ignore */
+  }
+}
+
+export function setTabletIncludeWhisper(on: boolean) {
+  tabletIncludeWhisper.value = !!on;
+  try {
+    localStorage.setItem(INCLUDE_WHISPER_KEY, on ? "true" : "false");
   } catch {
     /* ignore */
   }
@@ -258,6 +282,8 @@ export async function ensureTabletMarketSynced(
         coldBuyDepth: buyCountB,
         flowProbeMs: opts?.flowProbeMs,
         flowProbe: opts?.flowProbe,
+        includeAvailable:
+          opts?.includeAvailable ?? tabletIncludeWhisper.value,
         isCancelled: () => gen !== syncGeneration,
         onProgress: (detail) => {
           if (gen !== syncGeneration) return;

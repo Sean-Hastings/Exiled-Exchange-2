@@ -119,9 +119,13 @@ describe("TabletEVEngine", () => {
     expect(x.rollOutcomes.length).toBeGreaterThan(0);
     expect(x.expectedRollRevenueEx).toBeGreaterThan(0);
     expect(x.blank.some((b) => b.strategy === "Scour-Alch")).toBe(true);
-    expect(x.rare.length).toBe(4); // S/A/B/Trash marginal rows
+    expect(x.rare.length).toBe(4); // S/A/B/Trash MDP rows (B sale aliases Trash)
     expect(x.rare.every((r) => r.note?.includes("marginal vs sell"))).toBe(true);
-    expect(x.tierRegexes.map((t) => t.tier)).toEqual(["S", "A", "B"]);
+    expect(x.tierRegexes.map((t) => t.tier)).toEqual(["S", "A"]);
+    expect(x.rollOutcomes.map((o) => o.label)).toEqual(
+      expect.arrayContaining(["S rare", "A rare", "Trash rare"]),
+    );
+    expect(x.rollOutcomes.some((o) => o.label === "B rare")).toBe(false);
     expect(x.tierRegexes.some((t) => t.modIds.length > 0)).toBe(true);
     const scour = x.blank.find((b) => b.strategy === "Scour-Alch")!;
     const revSum = scour.outcomes.reduce((s, o) => s + o.revenueEx, 0);

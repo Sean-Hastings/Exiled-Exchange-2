@@ -41,7 +41,20 @@
         </button>
         <label
           class="flex items-center gap-1 text-xs text-gray-400 px-1"
-          title="Buy count B: blank unit cost = mean of the cheapest B Instant Buyout asks (hot→min(B,10), warm→min(B,25), cold→B). Sync prefers in-game marketplace (securable); falls back to mixed available only if mkt is thin."
+          title="Off: Instant Buyout (in-game marketplace) only. On: if Instant Buyout is empty, also search in-person / trade-site listings."
+        >
+          <input
+            type="checkbox"
+            class="accent-sky-400"
+            :checked="includeWhisper"
+            :disabled="isRefreshing"
+            @change="onIncludeWhisperInput"
+          />
+          Include in-person (trade site)
+        </label>
+        <label
+          class="flex items-center gap-1 text-xs text-gray-400 px-1"
+          title="Buy count B: blank unit cost = mean of the cheapest B Instant Buyout asks (hot→min(B,10), warm→min(B,25), cold→B). Instant Buyout only unless ‘Include in-person (trade site)’ is on."
         >
           Buy B
           <input
@@ -57,7 +70,7 @@
         </label>
         <span
           class="text-[10px] text-gray-500 max-w-[14rem] leading-tight"
-          title="Ship note: blank unit cost is mean of cheapest B Instant Buyout asks (regime-capped). Marketplace-first sync; not whisper/trade-site-only."
+          title="Ship note: blank unit cost is mean of cheapest B Instant Buyout asks (regime-capped). Instant Buyout only unless in-person toggle is on."
         >
           Blank cost = mean@B (mkt-first)
         </span>
@@ -294,7 +307,7 @@
           </div>
           <div class="overflow-auto min-h-0 p-2 space-y-3 text-gray-300">
             <div>
-              <div class="text-sky-200 mb-1">Alch roll → S / A / B / Trash</div>
+              <div class="text-sky-200 mb-1">Alch roll → S / A / Trash</div>
               <table class="w-full text-left mb-2">
                 <thead class="text-gray-500">
                   <tr>
@@ -321,7 +334,7 @@
                 </tbody>
               </table>
               <div class="text-sky-200/90 mb-1 mt-2">
-                Stash triage regex (S→A→B; no match → Trash)
+                Stash triage regex (S→A; no match → Trash)
               </div>
               <div
                 v-for="tr in selectedExplain.tierRegexes"
@@ -646,9 +659,11 @@ import {
   runtimeOverridesForBase,
   setTabletBuyCountB,
   setTabletCraftCountC,
+  setTabletIncludeWhisper,
   summarizeMarketForUi,
   tabletBuyCountB,
   tabletCraftCountC,
+  tabletIncludeWhisper,
   tabletMarketCache,
   tabletMarketDebug,
   tabletMarketStatus,
@@ -686,6 +701,7 @@ const isRefreshing = ref(false);
 const refreshScope = ref<string | null>(null);
 const buyCountB = tabletBuyCountB;
 const craftCountC = tabletCraftCountC;
+const includeWhisper = tabletIncludeWhisper;
 const showDebug = ref(false);
 const showTierUncertainty = ref(false);
 const showRollSeen = ref(false);
@@ -857,6 +873,11 @@ function onBuyCountBInput(ev: Event) {
 function onCraftCountCInput(ev: Event) {
   const el = ev.target as HTMLInputElement;
   setTabletCraftCountC(Number(el.value));
+}
+
+function onIncludeWhisperInput(ev: Event) {
+  const el = ev.target as HTMLInputElement;
+  setTabletIncludeWhisper(el.checked);
 }
 
 function onFitApplied() {

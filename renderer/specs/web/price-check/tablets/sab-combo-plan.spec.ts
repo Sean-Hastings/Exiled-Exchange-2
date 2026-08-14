@@ -1,144 +1,394 @@
 import { describe, expect, it } from "vitest";
 import { createEmptyMarketCache } from "@/web/price-check/tablets/default-market";
 import { TABLET_BASES, TABLET_MOD_WEIGHTS } from "@/web/price-check/tablets/mod-weights";
-import { modQualityTierForBase } from "@/web/price-check/tablets/mod-tiers";
+import {
+  classifyModCombo,
+  modQualityTierForBase,
+} from "@/web/price-check/tablets/mod-tiers";
 import { buildTierSaleTable } from "@/web/price-check/tablets/tablet-mdp";
 import { modRollCurveKey } from "@/web/price-check/tablets/mod-roll-price-curve";
-import type { TabletModDefinition } from "@/web/price-check/tablets/tablet-types";
 import {
   applySabSyncHit,
   buildSabSyncWorklist,
+  collapseModsByTradeStat,
   enumerateSabCombos,
   finalizeSoloSCurve,
   sabModsForBase,
-  soloProngComboKey,
   type SabSyncWorkItem,
 } from "@/web/price-check/tablets/sab-combo-plan";
+import type { TabletModDefinition } from "@/web/price-check/tablets/tablet-types";
+import type { ModQualityTier } from "@/web/price-check/tablets/strat-types";
 
-function fakeMod(
-  partial: Pick<
-    TabletModDefinition,
-    "id" | "tradeStatId" | "isPrefix" | "minValue" | "tier"
-  > &
-    Partial<TabletModDefinition>,
-): TabletModDefinition {
+function allBQuality(modIds: string[], baseId: string): boolean {
+  return (
+    modIds.length > 0 &&
+    modIds.every((id) => modQualityTierForBase(baseId, id) === "B")
+  );
+}
+
+function qualitiesOf(modIds: string[], baseId: string): ModQualityTier[] {
+  return modIds.map((id) => modQualityTierForBase(baseId, id));
+}
+
+function duoPairKind(
+  qs: ModQualityTier[],
+): "SS" | "SA" | "AA" | "SB" | "AB" | "BB" | "other" {
+  if (qs.length !== 2) return "other";
+  const nS = qs.filter((q) => q === "S").length;
+  const nA = qs.filter((q) => q === "A").length;
+  const nB = qs.filter((q) => q === "B").length;
+  if (nS === 2) return "SS";
+  if (nS === 1 && nA === 1) return "SA";
+  if (nA === 2) return "AA";
+  if (nS === 1 && nB === 1) return "SB";
+  if (nA === 1 && nB === 1) return "AB";
+  if (nB === 2) return "BB";
+  return "other";
+}
+
+function fitsAffixCaps(mods: TabletModDefinition[]): boolean {
+  let p = 0;
+  let s = 0;
+  for (const m of mods) {
+    if (m.isPrefix) p++;
+    else s++;
+  }
+  return p <= 2 && s <= 2;
+}
+
+function tradeLegalCombo(mods: TabletModDefinition[]): boolean {
+  if (!mods.length || !fitsAffixCaps(mods)) return false;
+  return collapseModsByTradeStat(mods).length === mods.length;
+}
+
+function combinations<T>(arr: T[], k: number): T[][] {
+  if (k <= 0 || k > arr.length) return [];
+  if (k === 1) return arr.map((x) => [x]);
+  const out: T[][] = [];
+  for (let i = 0; i <= arr.length - k; i++) {
+    for (const rest of combinations(arr.slice(i + 1), k - 1)) {
+      out.push([arr[i]!, ...rest]);
+    }
+  }
+  return out;
+}
+
+/**
+ * Reconstruct sell-combo counts from S/A/B (Junk excluded).
+ * Live worklist is afterSbDrop; previous/A keep AB/SB for pinned history.
+ */
+function sellComboCensus(baseId: string, safetyMax = 40) {
+  const base = TABLET_BASES[baseId];
+  const ids = base
+    ? [...base.allowedPrefixPool, ...base.allowedSuffixPool]
+    : [];
+  const raw: TabletModDefinition[] = [];
+  for (const id of ids) {
+    const m = TABLET_MOD_WEIGHTS[id];
+    if (!m) continue;
+    const q = modQualityTierForBase(baseId, m.id);
+    if (q === "Junk") continue;
+    raw.push(m);
+  }
+  const M = collapseModsByTradeStat(raw);
+  const sMods = M.filter((m) => modQualityTierForBase(baseId, m.id) === "S");
+  const aMods = M.filter((m) => modQualityTierForBase(baseId, m.id) === "A");
+  const bMods = M.filter((m) => modQualityTierForBase(baseId, m.id) === "B");
+
+  const solos = [...sMods, ...aMods].filter((m) => tradeLegalCombo([m])).length;
+
+  let ssSaAa = 0;
+  let sb = 0;
+  let ab = 0;
+  for (const pair of combinations(M, 2)) {
+    if (!tradeLegalCombo(pair)) continue;
+    const kind = duoPairKind(
+      pair.map((m) => modQualityTierForBase(baseId, m.id)),
+    );
+    if (kind === "SS" || kind === "SA" || kind === "AA") ssSaAa++;
+    else if (kind === "SB") sb++;
+    else if (kind === "AB") ab++;
+  }
+
+  let allS3 = 0;
+  for (const trip of combinations(sMods, 3)) {
+    if (tradeLegalCombo(trip)) allS3++;
+  }
+  let allS4 = 0;
+  if (sMods.length <= 8) {
+    for (const quad of combinations(sMods, 4)) {
+      if (tradeLegalCombo(quad)) allS4++;
+    }
+  }
+
+  const previous = solos + ssSaAa + sb + ab + allS3 + allS4;
+  const afterAbDrop = solos + ssSaAa + sb + allS3 + allS4;
+  const afterSbDrop = solos + ssSaAa + allS3 + allS4;
   return {
-    name: partial.id,
-    statPattern: /x/,
-    weight: 100,
-    maxValue: (partial.minValue ?? 1) + 5,
-    category: "Temple",
-    valueScore: 50,
-    regexHint: "x",
-    ...partial,
+    baseId,
+    s: sMods.length,
+    a: aMods.length,
+    b: bMods.length,
+    solos,
+    ssSaAa,
+    sb,
+    ab,
+    allS3,
+    allS4,
+    previous: Math.min(safetyMax, previous),
+    afterAbDrop: Math.min(safetyMax, afterAbDrop),
+    afterSbDrop: Math.min(safetyMax, afterSbDrop),
+    truncatedAt40: afterAbDrop > safetyMax,
+    fullRefreshPrevious: 2 + 1 + Math.min(safetyMax, previous),
+    fullRefreshA: 2 + 1 + Math.min(safetyMax, afterAbDrop),
+    fullRefreshB: 2 + 1 + Math.min(safetyMax, afterSbDrop),
   };
 }
 
 describe("sab-combo-plan", () => {
-  it("enumerates solos/duos/triples/quad for 1S+1A+2B mix without junk", () => {
-    // 2p + 2s → legal 2+2 quad; no Junk ids
-    const M = [
-      fakeMod({
-        id: "fake_a_prefix",
-        tradeStatId: "explicit.stat_111",
-        isPrefix: true,
-        minValue: 10,
-        tier: 1,
-      }),
-      fakeMod({
-        id: "fake_b_prefix",
-        tradeStatId: "explicit.stat_222",
-        isPrefix: true,
-        minValue: 5,
-        tier: 1,
-      }),
-      fakeMod({
-        id: "fake_s_suffix",
-        tradeStatId: "explicit.stat_333",
-        isPrefix: false,
-        minValue: 5,
-        tier: 1,
-      }),
-      fakeMod({
-        id: "fake_b_suffix",
-        tradeStatId: "explicit.stat_444",
-        isPrefix: false,
-        minValue: 8,
-        tier: 1,
-      }),
-    ];
-
-    const plan = enumerateSabCombos(M, 40);
-    const solos = plan.filter((w) => w.kind === "solo");
-    const duos = plan.filter((w) => w.kind === "duo");
-    const triples = plan.filter((w) => w.kind === "triple");
-    const quads = plan.filter((w) => w.kind === "quad");
-
-    expect(solos).toHaveLength(4);
-    // cross 2×2=4 + pp 1 + ss 1 = 6
-    expect(duos).toHaveLength(6);
-    // 2p1s ×2 + 1p2s ×2 = 4
-    expect(triples).toHaveLength(4);
-    expect(quads).toHaveLength(1);
-    expect(plan).toHaveLength(15);
-
-    for (const item of plan) {
-      for (const id of item.modIds) {
-        expect(id).not.toMatch(/junk/i);
-        expect(id.startsWith("fake_")).toBe(true);
+  it("keeps S/A solos, SS/SA/AA duos, and all-S triples/quads only", () => {
+    for (const baseId of ["temple_tablet", "breach_tablet"] as const) {
+      const M = sabModsForBase(baseId);
+      expect(
+        M.every((m) => {
+          const q = modQualityTierForBase(baseId, m.id);
+          return q === "S" || q === "A";
+        }),
+      ).toBe(true);
+      const plan = enumerateSabCombos(M, 40, baseId);
+      expect(plan.length).toBeGreaterThan(0);
+      for (const item of plan) {
+        const qs = qualitiesOf(item.modIds, baseId);
+        expect(qs.every((q) => q !== "Junk" && q !== "B")).toBe(true);
+        if (item.kind === "solo") {
+          expect(["S", "A"]).toContain(qs[0]);
+        } else if (item.kind === "duo") {
+          const kind = duoPairKind(qs);
+          expect(["SS", "SA", "AA"]).toContain(kind);
+          expect(kind).not.toBe("SB");
+          expect(kind).not.toBe("AB");
+          expect(kind).not.toBe("BB");
+        } else {
+          expect(qs.every((q) => q === "S")).toBe(true);
+        }
       }
     }
   });
 
-  it("temple worklist has no Junk-quality mods and collapses pack tiers", () => {
+  it("temple worklist has 1 crystal solo @8, no crystal+B duos, no prongs/B solos/triples", () => {
     const M = sabModsForBase("temple_tablet");
     expect(M.some((m) => m.id === "temple_crystal_t1")).toBe(true);
-    // pack_t1 preferred over pack_t2 (higher min)
-    expect(M.some((m) => m.id === "map_pack_size_t1")).toBe(true);
+    expect(M.some((m) => m.id === "map_pack_size_t1")).toBe(false);
     expect(M.some((m) => m.id === "map_pack_size_t2")).toBe(false);
     for (const m of M) {
-      expect(modQualityTierForBase("temple_tablet", m.id)).not.toBe("Junk");
+      const q = modQualityTierForBase("temple_tablet", m.id);
+      expect(q).not.toBe("Junk");
+      expect(q).not.toBe("B");
     }
 
     const plan = buildSabSyncWorklist("temple_tablet", 40);
-    expect(plan.length).toBeGreaterThan(10);
-    expect(plan.length).toBeLessThanOrEqual(40);
+    expect(plan).toHaveLength(1);
+
+    const bSolos = [
+      "map_pack_size_t1",
+      "junk_monster_eff_t1",
+      "junk_item_rarity_t1",
+      "map_waystone_qty_t1",
+    ];
     for (const item of plan) {
       for (const id of item.modIds) {
         expect(modQualityTierForBase("temple_tablet", id)).not.toBe("Junk");
+        expect(modQualityTierForBase("temple_tablet", id)).not.toBe("B");
       }
+      expect(allBQuality(item.modIds, "temple_tablet")).toBe(false);
+      if (item.kind === "solo") {
+        expect(bSolos).not.toContain(item.modIds[0]);
+      }
+      expect(item.kind === "triple" || item.kind === "quad").toBe(false);
     }
+
+    const crystalSolos = plan.filter(
+      (w) => w.kind === "solo" && w.modIds[0] === "temple_crystal_t1",
+    );
+    expect(crystalSolos).toHaveLength(1);
+    expect(crystalSolos[0]!.prongRoll).toBe(8);
+    expect(crystalSolos[0]!.stats).toEqual([
+      { id: "explicit.stat_1940774881", min: 8, max: 8 },
+    ]);
+
+    const crystalPlusB = plan.filter(
+      (w) =>
+        w.kind === "duo" &&
+        w.modIds.includes("temple_crystal_t1") &&
+        w.modIds.some((id) => modQualityTierForBase("temple_tablet", id) === "B"),
+    );
+    expect(crystalPlusB).toHaveLength(0);
+    expect(
+      plan.some(
+        (w) =>
+          w.kind === "duo" &&
+          duoPairKind(qualitiesOf(w.modIds, "temple_tablet")) === "SB",
+      ),
+    ).toBe(false);
+    expect(
+      plan.some(
+        (w) =>
+          w.kind === "duo" &&
+          duoPairKind(qualitiesOf(w.modIds, "temple_tablet")) === "AB",
+      ),
+    ).toBe(false);
+
+    // B+B (e.g. pack|waystone) is not searched
+    expect(
+      plan.some(
+        (w) =>
+          w.modIds.includes("map_pack_size_t1") &&
+          w.modIds.includes("map_waystone_qty_t1") &&
+          !w.modIds.includes("temple_crystal_t1"),
+      ),
+    ).toBe(false);
   });
 
-  it("solo S crystal worklist emits 3 exact-roll prongs", () => {
-    const plan = buildSabSyncWorklist("temple_tablet", 40);
-    const crystalProngs = plan
-      .filter(
-        (w) =>
-          w.kind === "solo" &&
-          w.modIds[0] === "temple_crystal_t1" &&
-          w.prongRoll != null,
-      )
-      .sort((a, b) => (a.prongRoll ?? 0) - (b.prongRoll ?? 0));
-    expect(crystalProngs.map((w) => w.prongRoll)).toEqual([5, 7, 10]);
-    expect(crystalProngs.map((w) => w.comboKey)).toEqual([
-      soloProngComboKey("temple_crystal_t1", 5),
-      soloProngComboKey("temple_crystal_t1", 7),
-      soloProngComboKey("temple_crystal_t1", 10),
-    ]);
-    for (const w of crystalProngs) {
-      expect(w.stats).toEqual([
-        {
-          id: "explicit.stat_1940774881",
-          min: w.prongRoll,
-          max: w.prongRoll,
-        },
-      ]);
+  it("breach worklist keeps S/A solos, SS/SA/AA only; no SB, no AB/BB, no mixed triples", () => {
+    const plan = buildSabSyncWorklist("breach_tablet", 40);
+    const census = sellComboCensus("breach_tablet");
+    expect(plan).toHaveLength(census.afterSbDrop);
+    expect(census.ab).toBeGreaterThan(0);
+    expect(census.sb).toBeGreaterThan(0);
+
+    for (const item of plan) {
+      expect(allBQuality(item.modIds, "breach_tablet")).toBe(false);
+      const qs = qualitiesOf(item.modIds, "breach_tablet");
+      if (item.kind === "solo") {
+        expect(["S", "A"]).toContain(qs[0]);
+        expect(qs[0]).not.toBe("B");
+      } else if (item.kind === "duo") {
+        expect(["SS", "SA", "AA"]).toContain(duoPairKind(qs));
+      }
+      expect(item.kind === "triple" || item.kind === "quad").toBe(false);
     }
-    // Flat solo key no longer emitted for rollable S
-    expect(plan.some((w) => w.comboKey === "__solo__:temple_crystal_t1")).toBe(
-      false,
+
+    const sSolos = plan.filter(
+      (w) =>
+        w.kind === "solo" &&
+        modQualityTierForBase("breach_tablet", w.modIds[0]!) === "S",
     );
+    const aSolos = plan.filter(
+      (w) =>
+        w.kind === "solo" &&
+        modQualityTierForBase("breach_tablet", w.modIds[0]!) === "A",
+    );
+    expect(sSolos).toHaveLength(2);
+    expect(aSolos.length).toBeGreaterThan(0);
+    expect(sSolos.map((w) => w.modIds[0]).sort()).toEqual(
+      ["breach_hiveblood_t1", "breach_unstable_rare_t1"].sort(),
+    );
+    expect(sSolos.every((w) => w.prongRoll != null)).toBe(true);
+
+    const ss = plan.filter(
+      (w) =>
+        w.kind === "duo" &&
+        w.modIds.includes("breach_unstable_rare_t1") &&
+        w.modIds.includes("breach_hiveblood_t1"),
+    );
+    expect(ss.length).toBe(1);
+
+    const sa = plan.filter(
+      (w) =>
+        w.kind === "duo" &&
+        w.modIds.includes("breach_unstable_rare_t1") &&
+        w.modIds.includes("breach_rare_potency_t1"),
+    );
+    expect(sa.length).toBe(1);
+
+    const sPlusB = plan.filter(
+      (w) =>
+        w.kind === "duo" &&
+        w.modIds.includes("breach_unstable_rare_t1") &&
+        w.modIds.includes("junk_monster_eff_t1"),
+    );
+    expect(sPlusB).toHaveLength(0);
+
+    // A+B (potency + monster eff) is not searched
+    expect(
+      plan.some(
+        (w) =>
+          w.kind === "duo" &&
+          w.modIds.includes("breach_rare_potency_t1") &&
+          w.modIds.includes("junk_monster_eff_t1"),
+      ),
+    ).toBe(false);
+
+    // B+B (eff + vruun) is not searched
+    expect(
+      classifyModCombo(
+        ["junk_monster_eff_t1", "breach_vruun_chance_t1"],
+        "breach_tablet",
+      ).rareTier,
+    ).toBe("B");
+    expect(
+      plan.some(
+        (w) =>
+          w.modIds.includes("junk_monster_eff_t1") &&
+          w.modIds.includes("breach_vruun_chance_t1") &&
+          w.modIds.length === 2,
+      ),
+    ).toBe(false);
+  });
+
+  it("solo S crystal worklist emits one 65th-pct roll @8", () => {
+    const plan = buildSabSyncWorklist("temple_tablet", 40);
+    const crystal = plan.find(
+      (w) => w.kind === "solo" && w.modIds[0] === "temple_crystal_t1",
+    );
+    expect(crystal).toBeTruthy();
+    expect(crystal!.prongRoll).toBe(8);
+    expect(crystal!.comboKey).toBe("__solo__:temple_crystal_t1");
+    expect(crystal!.stats).toEqual([
+      { id: "explicit.stat_1940774881", min: 8, max: 8 },
+    ]);
+  });
+
+  it("enumerates affix-legal all-S triples/quads and skips mixed triples", () => {
+    const crystal = TABLET_MOD_WEIGHTS.temple_crystal_t1!;
+    const splinter = TABLET_MOD_WEIGHTS.delirium_splinter_stack_t1!;
+    const logPrefix = {
+      ...TABLET_MOD_WEIGHTS.expedition_logbook_t1!,
+      isPrefix: true,
+    };
+    const rerollPrefix = {
+      ...TABLET_MOD_WEIGHTS.ritual_reroll_t1!,
+      isPrefix: true,
+    };
+    const packB = TABLET_MOD_WEIGHTS.map_pack_size_t1!;
+    const plan = enumerateSabCombos(
+      [crystal, splinter, logPrefix, rerollPrefix, packB],
+      40,
+    );
+
+    const triples = plan.filter((w) => w.kind === "triple");
+    const quads = plan.filter((w) => w.kind === "quad");
+    expect(triples).toHaveLength(4);
+    expect(quads).toHaveLength(1);
+    const allSIds = [
+      "temple_crystal_t1",
+      "delirium_splinter_stack_t1",
+      "expedition_logbook_t1",
+      "ritual_reroll_t1",
+    ];
+    for (const item of [...triples, ...quads]) {
+      expect(item.modIds).not.toContain("map_pack_size_t1");
+      expect(item.modIds.every((id) => allSIds.includes(id))).toBe(true);
+    }
+    expect(quads[0]!.modIds.sort()).toEqual([...allSIds].sort());
+    expect(
+      plan.some(
+        (w) =>
+          w.kind === "triple" &&
+          w.modIds.includes("map_pack_size_t1") &&
+          w.modIds.includes("temple_crystal_t1"),
+      ),
+    ).toBe(false);
   });
 
   it("solo S expands onto all prefix+S keys", () => {
@@ -191,7 +441,7 @@ describe("sab-combo-plan", () => {
     }
   });
 
-  it("buildTierSaleTable picks up measuredAffixSamples for same-side duo", () => {
+  it("B-tier samples do not price a mid-band; B sale equals Trash dump", () => {
     const market = createEmptyMarketCache();
     market.basePrices.temple_tablet = 100;
     market.junkSellByBase = { temple_tablet: 60 };
@@ -201,22 +451,156 @@ describe("sab-combo-plan", () => {
     market.currencyCosts.transmute = 0.01;
     market.currencyCosts.augmentation = 0.02;
     market.currencyCosts.regal = 0.15;
-    // Same-side B+B prefixes — not on 1p1s grid
+    // Cross-side B+B (pack|waystone) → MDP B (score 20), not A
+    expect(
+      classifyModCombo(
+        ["map_pack_size_t1", "map_waystone_qty_t1"],
+        "temple_tablet",
+      ).rareTier,
+    ).toBe("B");
     market.measuredAffixSamples = [
       {
         baseId: "temple_tablet",
-        modIds: ["junk_monster_eff_t1", "map_pack_size_t1"].sort(),
+        modIds: ["map_pack_size_t1", "map_waystone_qty_t1"].sort(),
         sellEx: 250,
       },
     ];
 
     const sales = buildTierSaleTable(market, "temple_tablet")!;
-    // B|B → rare B; low-end should see the sample (250) rather than only dump cascade
-    expect(sales.uncorrupted.B).toBeLessThanOrEqual(250);
-    expect(sales.uncorrupted.B).toBeGreaterThan(0);
-    // Sample is the only measured B sale → low-end = 250 (unless monotone pull-down)
-    expect(
-      sales.uncorrupted.B === 250 || sales.uncorrupted.B === sales.uncorrupted.A,
-    ).toBe(true);
+    expect(sales.uncorrupted.B).toBe(sales.uncorrupted.Trash);
+    expect(sales.uncorrupted.B).toBe(60);
+    expect(sales.uncorrupted.B).not.toBe(250);
+  });
+
+  it("SEARCH sell-combo census per tablet base (afterSbDrop is live worklist)", () => {
+    const summary = Object.keys(TABLET_BASES).map((baseId) => {
+      const row = sellComboCensus(baseId);
+      const plan = buildSabSyncWorklist(baseId, 40);
+      expect(plan, baseId).toHaveLength(row.afterSbDrop);
+      expect(
+        plan.filter(
+          (w) =>
+            w.kind === "duo" &&
+            duoPairKind(qualitiesOf(w.modIds, baseId)) === "AB",
+        ),
+      ).toHaveLength(0);
+      expect(
+        plan.filter(
+          (w) =>
+            w.kind === "duo" &&
+            duoPairKind(qualitiesOf(w.modIds, baseId)) === "SB",
+        ),
+      ).toHaveLength(0);
+      return {
+        base: baseId.replace(/_tablet$/, ""),
+        prev: row.previous,
+        A: row.afterAbDrop,
+        B_noSB: row.afterSbDrop,
+        AB_dropped: row.ab,
+        SB: row.sb,
+        allS3: row.allS3,
+        sMods: row.s,
+        refreshA: row.fullRefreshA,
+        refreshB: row.fullRefreshB,
+      };
+    });
+    expect(summary).toEqual([
+      {
+        base: "breach",
+        prev: 18,
+        A: 14,
+        B_noSB: 10,
+        AB_dropped: 4,
+        SB: 4,
+        allS3: 0,
+        sMods: 2,
+        refreshA: 17,
+        refreshB: 13,
+      },
+      {
+        base: "delirium",
+        prev: 14,
+        A: 11,
+        B_noSB: 10,
+        AB_dropped: 3,
+        SB: 1,
+        allS3: 0,
+        sMods: 1,
+        refreshA: 14,
+        refreshB: 13,
+      },
+      {
+        base: "expedition",
+        prev: 25,
+        A: 19,
+        B_noSB: 15,
+        AB_dropped: 6,
+        SB: 4,
+        allS3: 0,
+        sMods: 2,
+        refreshA: 22,
+        refreshB: 18,
+      },
+      {
+        base: "ritual",
+        prev: 15,
+        A: 9,
+        B_noSB: 6,
+        AB_dropped: 6,
+        SB: 3,
+        allS3: 0,
+        sMods: 1,
+        refreshA: 12,
+        refreshB: 9,
+      },
+      {
+        base: "overseer",
+        prev: 27,
+        A: 23,
+        B_noSB: 21,
+        AB_dropped: 4,
+        SB: 2,
+        allS3: 0,
+        sMods: 2,
+        refreshA: 26,
+        refreshB: 24,
+      },
+      {
+        base: "abyss",
+        prev: 27,
+        A: 22,
+        B_noSB: 21,
+        AB_dropped: 5,
+        SB: 1,
+        allS3: 0,
+        sMods: 1,
+        refreshA: 25,
+        refreshB: 24,
+      },
+      {
+        base: "irradiated",
+        prev: 20,
+        A: 17,
+        B_noSB: 15,
+        AB_dropped: 3,
+        SB: 2,
+        allS3: 0,
+        sMods: 2,
+        refreshA: 20,
+        refreshB: 18,
+      },
+      {
+        base: "temple",
+        prev: 5,
+        A: 5,
+        B_noSB: 1,
+        AB_dropped: 0,
+        SB: 4,
+        allS3: 0,
+        sMods: 1,
+        refreshA: 8,
+        refreshB: 4,
+      },
+    ]);
   });
 });

@@ -178,7 +178,7 @@ describe("tablet-mdp", () => {
 
   it("junk-heavy 2p+2s pool makes Trash the modal alch outcome", () => {
     const sales = buildTierSaleTable(measuredFixture(), "breach_tablet")!;
-    // Shared eff/rarity are B supports; Domain dead — Trash must still beat
+    // Shared eff is B; rarity is Junk on Breach; Domain dead — Trash must still beat
     // S and A individually.
     expect(sales.alchDist.Trash).toBeGreaterThan(sales.alchDist.S);
     expect(sales.alchDist.Trash).toBeGreaterThan(sales.alchDist.A);
@@ -235,5 +235,23 @@ describe("tablet-mdp", () => {
     expect(a!.alchDist.S).toBe(b!.alchDist.S);
     expect(a!.alchDist.Trash).toBe(b!.alchDist.Trash);
     expect(a!.chaosFrom.Trash.S).toBe(b!.chaosFrom.Trash.S);
+  });
+
+  it("priced book aliases B sale and policy to Trash/dump", () => {
+    const market = measuredFixture();
+    market.junkSellByBase = { breach_tablet: 40 };
+    market.modValueMap = {};
+    // Cross-side B+B would have been a mid-band; skip → dump
+    market.modValueMap[`junk_monster_eff_t1+breach_vruun_chance_t1`] = 80;
+    const sales = buildTierSaleTable(market, "breach_tablet")!;
+    expect(sales.uncorrupted.B).toBe(sales.uncorrupted.Trash);
+    expect(sales.uncorrupted.B).toBe(40);
+    expect(sales.uncorruptedSource.B).toBe(sales.uncorruptedSource.Trash);
+
+    const policy = defaultPolicy("Scour-Alch");
+    expect(policy.rare.B).toBe(policy.rare.Trash);
+    expect(policy.rare.B).toBe("Chaos");
+    expect(policy.corrupt.B).toBe(policy.corrupt.Trash);
+    expect(policy.corrupt.B).toBe("Dump");
   });
 });

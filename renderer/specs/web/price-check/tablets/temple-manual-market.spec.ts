@@ -37,12 +37,13 @@ describe("temple manual survey market", () => {
     const sales = buildTierSaleTable(templeMarket(), "temple_tablet")!;
     expect(Number.isNaN(sales.baseCost)).toBe(true);
     expect(sales.uncorrupted.Trash).toBe(60);
-    // Crystal 1p1s land in S (crystal-presence force); A cascades from mid/B
+    // Crystal 1p1s land in S (crystal-presence force); A cascades toward dump
     expect(sales.uncorrupted.S).toBeGreaterThan(900);
     expect(sales.uncorrupted.S).toBeLessThan(2100);
     expect(sales.uncorrupted.A).toBeLessThanOrEqual(sales.uncorrupted.S);
-    expect(sales.uncorrupted.B).toBeGreaterThanOrEqual(60);
-    expect(sales.uncorrupted.B).toBeLessThanOrEqual(80);
+    // B mid-band (~80) is junk filler — priced as dump, not 80
+    expect(sales.uncorrupted.B).toBe(sales.uncorrupted.Trash);
+    expect(sales.uncorrupted.B).toBe(60);
     expect(sales.dumpFloorSource).toBe("manual-survey");
     expect(sales.uncorruptedSource.Trash).toBe("manual-survey");
     expect(sales.uncorruptedSource.S).toBe("manual-survey");

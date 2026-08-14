@@ -85,8 +85,10 @@ const EXPLICIT_TIER_BY_BASE: Record<
     breach_pack_size_t2: "B",
     breach_vruun_chance_t1: "B",
     junk_monster_eff_t1: "B",
-    junk_item_rarity_t1: "B",
-    // Legacy Domain — dead economy, sealed Junk
+    // Item rarity is dump filler on Breach (not a B support).
+    junk_item_rarity_t1: "Junk",
+    // Domain splinter qty: tagged Junk as "dead economy / parse-only".
+    // Not verified live — still in the suffix pool; revisit if it still rolls.
     breach_splinter_qty_t1: "Junk",
     breach_splinter_qty_t2: "Junk",
   }),

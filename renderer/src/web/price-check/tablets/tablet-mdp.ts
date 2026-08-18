@@ -52,8 +52,12 @@ export interface TierSaleTable {
   corrupted: Record<RareTier, number>;
   /** P(tier) from a fresh alchemy-style affix roll */
   alchDist: Record<RareTier, number>;
-  /** P(tier) from magic-pipeline → rare */
+  /** P(tier) from blank→T+A→(promising regal+ex | trash alch). Not Buy-Magic. */
   magicDist: Record<RareTier, number>;
+  /** P(T+A blue is promising: has A or S). */
+  pMagicPromising: number;
+  /** P(T+A blue is trash: no A and no S). */
+  pMagicTrash: number;
   /**
    * One-affix chaos: P(to | from). Averaged over weighted 2p+2s configs in
    * `from`, then uniform slot pick + weighted replacement on that side.
@@ -64,12 +68,21 @@ export interface TierSaleTable {
    * Not used to blend tier sale prices — junk mass is already in alchDist.
    */
   measuredFrac: number;
-  /** Expected orb costs for magic blank (excl. base) */
+  /** Expected orb costs for magic-from-blank (T+A + convert; excl. base) */
   magicOrbCost: number;
+  /**
+   * Expected convert cost for a **T+A** blue:
+   * pPromising×(regal+exalt) + pTrash×alch. Bought magics do not use this.
+   */
+  magicConvertCost: number;
   alchOrbCost: number;
   chaosCost: number;
   vaalCost: number;
   baseCost: number;
+  /** 10-use magic buy mean-of-B (NaN until measured). */
+  magicBuyCost: number;
+  /** 10-use rare buy mean-of-B from junk book (NaN until measured). */
+  rareBuyCost: number;
   /**
    * Junk-tier calibration floor when Trash has no measured asks (seed only).
    * Sell-as-is for any tier uses uncorrupted/corrupted[tier], never this alone.
@@ -297,7 +310,7 @@ export function solveOptimalRarePolicy(sales: TierSaleTable): {
  * Default "sensible" policy: list S/A, chaos B+Trash (until hit).
  * B is junk filler — same action as Trash. Prefer {@link solveOptimalRarePolicy}.
  */
-export function defaultPolicy(blank: BlankCraftStrategy = "Scour-Alch"): CraftPolicy {
+export function defaultPolicy(blank: BlankCraftStrategy = "Magic-Pipeline"): CraftPolicy {
   return {
     blank,
     rare: {
@@ -312,7 +325,7 @@ export function defaultPolicy(blank: BlankCraftStrategy = "Scour-Alch"): CraftPo
 
 /** Blank strategies to score once rare actions are optimized per tier. */
 export function candidateBlankStrategies(): BlankCraftStrategy[] {
-  return ["Skip-Blanks", "Scour-Alch", "Magic-Pipeline"];
+  return ["Skip-Blanks", "Magic-Pipeline", "Buy-Magic", "Buy-Rare"];
 }
 
 /** @deprecated Prefer solveOptimalRarePolicy + candidateBlankStrategies */
@@ -517,15 +530,26 @@ export function clearChaosTransitionCache() {
 
 /**
  * Magic T+A = one prefix + one suffix from separate pools (independent rolls).
- * Returns branch probs for strat_reco regal/alch routing.
+ *
+ * A blue is **promising** iff it has at least one A or S (worth keeping → regal).
+ * Otherwise it is **trash** (alch, which rerolls the 1p1s).
+ * Blank+T+A is a lottery over those two states. Bought cheapest magics are
+ * always trash.
  */
 export function magicOnePOneSBranchProbs(
   baseId: string,
   wOpts?: ModWeightOpts,
 ): {
+  /** P(at least one S on the 1p1s). */
   pHasS: number;
+  /** P(no S, but at least one A). */
   pHasAOnly: number;
+  /** @deprecated use {@link pTrash} */
   pJunk: number;
+  /** P(has an A or S worth keeping) = pHasS + pHasAOnly. */
+  pPromising: number;
+  /** P(no A and no S) — alch this blue. */
+  pTrash: number;
   /** Mean single-side S share (prefix+suffix)/2 — for exalt caps etc. */
   pSMean: number;
   pAMean: number;
@@ -563,11 +587,14 @@ export function magicOnePOneSBranchProbs(
   const pBJunk_s = s.B + s.Junk;
   // P(no S on either side ∧ at least one A)
   const pHasAOnly = Math.max(0, pNoS_p * pNoS_s - pBJunk_p * pBJunk_s);
-  const pJunk = Math.max(0, 1 - pHasS - pHasAOnly);
+  const pTrash = Math.max(0, 1 - pHasS - pHasAOnly);
+  const pPromising = Math.min(1, pHasS + pHasAOnly);
   return {
     pHasS,
     pHasAOnly,
-    pJunk,
+    pJunk: pTrash,
+    pPromising,
+    pTrash,
     pSMean: (p.S + s.S) / 2,
     pAMean: (p.A + s.A) / 2,
   };
@@ -900,6 +927,9 @@ export function buildTierSaleTable(
   const transmute = measured(c.transmute);
   const aug = measured(c.augmentation);
   const regal = measured(c.regal);
+  const exalt = measured(c.exalted);
+  const magicBuyCost = measured(market.magicBuyByBase?.[baseId]);
+  const rareBuyCost = measured(market.junkBuyByBase?.[baseId]);
 
   const alchDist = emptyDist();
   accumulateRare2p2sDist(
@@ -967,12 +997,18 @@ export function buildTierSaleTable(
       : Number.NaN;
   }
 
-  // Magic-pipeline → rare tier dist (T+A = 1 prefix + 1 suffix, separate pools)
+  // Blank+T+A blues: promising (has A or S) → regal+ex; trash → alch.
+  // Bought magics are a different entry (always trash) — see entryDist.
   let magicDist = emptyDist();
   let magicOrbCost = Number.NaN;
+  let magicConvertCost = Number.NaN;
+  let pMagicPromising = 0;
+  let pMagicTrash = 1;
   const magicBranch = magicOnePOneSBranchProbs(baseId, opts);
   if (magicBranch) {
-    const { pHasS, pHasAOnly, pJunk } = magicBranch;
+    const { pHasS, pHasAOnly, pPromising, pTrash } = magicBranch;
+    pMagicPromising = pPromising;
+    pMagicTrash = pTrash;
 
     const regalS: Record<RareTier, number> = {
       S: 0.55,
@@ -988,18 +1024,23 @@ export function buildTierSaleTable(
     };
     for (const t of RARE_TIERS) {
       magicDist[t] =
-        pHasS * regalS[t] + pHasAOnly * regalA[t] + pJunk * alchDist[t];
+        pHasS * regalS[t] + pHasAOnly * regalA[t] + pTrash * alchDist[t];
     }
     const sum = RARE_TIERS.reduce((s, t) => s + magicDist[t], 0) || 1;
     for (const t of RARE_TIERS) magicDist[t] /= sum;
 
-    const regalSpend =
-      (pHasS + pHasAOnly) * regal + pJunk * alchOrbCost;
+    const convert =
+      Number.isFinite(regal) &&
+      Number.isFinite(exalt) &&
+      Number.isFinite(alchOrbCost)
+        ? pPromising * (regal + exalt) + pTrash * alchOrbCost
+        : Number.NaN;
+    magicConvertCost = convert;
     magicOrbCost =
       Number.isFinite(transmute) &&
       Number.isFinite(aug) &&
-      Number.isFinite(regalSpend)
-        ? transmute + aug + regalSpend
+      Number.isFinite(convert)
+        ? transmute + aug + convert
         : Number.NaN;
   } else {
     magicDist = { ...alchDist };
@@ -1010,13 +1051,18 @@ export function buildTierSaleTable(
     corrupted,
     alchDist,
     magicDist,
+    pMagicPromising,
+    pMagicTrash,
     chaosFrom,
     measuredFrac,
     magicOrbCost,
+    magicConvertCost,
     alchOrbCost,
     chaosCost,
     vaalCost,
     baseCost,
+    magicBuyCost,
+    rareBuyCost,
     dumpFloor: dump,
     dumpFloorSource: dumpInfo.source,
     uncorruptedSource,
@@ -1154,6 +1200,54 @@ export function expectedUnderDist(
   return s;
 }
 
+export function isInventoryOnly(blank: BlankCraftStrategy): boolean {
+  return blank === "Skip-Blanks";
+}
+
+/** Opening rare-tier dist for an entry strategy. */
+export function entryDist(
+  sales: TierSaleTable,
+  blank: BlankCraftStrategy,
+): Record<RareTier, number> {
+  if (blank === "Buy-Rare") {
+    return { S: 0, A: 0, B: 0, Trash: 1 };
+  }
+  // Bought cheapest magics are always trash → alch (no promising regal lottery).
+  // Blank+T+A still uses magicDist: P(promising)×regal+ex + P(trash)×alch.
+  if (blank === "Magic-Pipeline") {
+    return sales.magicDist;
+  }
+  return sales.alchDist;
+}
+
+/** Liquid spent to enter that strategy (base/buy + convert orbs). */
+export function entrySpend(
+  sales: TierSaleTable,
+  blank: BlankCraftStrategy,
+): number {
+  switch (blank) {
+    case "Skip-Blanks":
+      return 0;
+    case "Buy-Magic":
+      return Number.isFinite(sales.magicBuyCost) &&
+        Number.isFinite(sales.alchOrbCost)
+        ? sales.magicBuyCost + sales.alchOrbCost
+        : Number.NaN;
+    case "Buy-Rare":
+      return sales.rareBuyCost;
+    case "Magic-Pipeline":
+      return Number.isFinite(sales.baseCost) &&
+        Number.isFinite(sales.magicOrbCost)
+        ? sales.baseCost + sales.magicOrbCost
+        : Number.NaN;
+    case "Scour-Alch":
+      return Number.isFinite(sales.baseCost) &&
+        Number.isFinite(sales.alchOrbCost)
+        ? sales.baseCost + sales.alchOrbCost
+        : Number.NaN;
+  }
+}
+
 export function solvePolicy(
   market: MarketPriceCache,
   baseId: string,
@@ -1186,8 +1280,7 @@ export function solvePolicy(
     if (policy.rare[tier] !== "List") rerollWorthy.push(tier);
   }
 
-  const dist =
-    policy.blank === "Magic-Pipeline" ? sales.magicDist : sales.alchDist;
+  const dist = entryDist(sales, policy.blank);
   const blankOutcomes: TierSlice[] = RARE_TIERS.map((tier) => ({
     tier,
     prob: dist[tier],
@@ -1200,15 +1293,10 @@ export function solvePolicy(
     whiteEV = 0;
   } else {
     const cont = expectedUnderDist(dist, rareV);
-    const orb =
-      policy.blank === "Magic-Pipeline"
-        ? sales.magicOrbCost
-        : sales.alchOrbCost;
-    const base = sales.baseCost;
+    const spend = entrySpend(sales, policy.blank);
     if (!Number.isFinite(cont)) whiteEV = cont;
-    else if (!Number.isFinite(orb) || !Number.isFinite(base))
-      whiteEV = Number.NaN;
-    else whiteEV = cont - base - orb;
+    else if (!Number.isFinite(spend)) whiteEV = Number.NaN;
+    else whiteEV = cont - spend;
   }
 
   return {
@@ -1324,13 +1412,8 @@ export function simulatePolicy(
   }
 
   const maxChaos = opts?.maxChaosPerItem ?? 10_000;
-  const dist =
-    policy.blank === "Magic-Pipeline" ? sales.magicDist : sales.alchDist;
-  const orbCost =
-    policy.blank === "Magic-Pipeline"
-      ? sales.magicOrbCost
-      : sales.alchOrbCost;
-  const baseCost = sales.baseCost;
+  const dist = entryDist(sales, policy.blank);
+  const spend0 = entrySpend(sales, policy.blank);
 
   const pickTier = (d: Record<RareTier, number>): RareTier => {
     let r = Math.random();
@@ -1348,9 +1431,7 @@ export function simulatePolicy(
   let truncated = 0;
 
   for (let i = 0; i < iterations; i++) {
-    let cost =
-      (Number.isFinite(baseCost) ? baseCost : 0) +
-      (Number.isFinite(orbCost) ? orbCost : 0);
+    let cost = Number.isFinite(spend0) ? spend0 : 0;
     let tier = pickTier(dist);
     let corrupted = false;
     let rolls = 0;

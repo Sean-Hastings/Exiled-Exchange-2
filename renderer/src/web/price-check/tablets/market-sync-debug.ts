@@ -28,7 +28,10 @@ export interface SearchDebugTrace {
     | "buy-online"
     | "buy-any"
     | "sell-combo"
-    | "sell-junk";
+    | "sell-junk"
+    | "sell-magic"
+    | "buy-junk"
+    | "buy-magic";
   label: string;
   typeName: string;
   /** status.option sent to trade2 */

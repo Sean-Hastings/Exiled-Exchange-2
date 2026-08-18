@@ -1,22 +1,31 @@
 /**
  * Dual-path tablet flipping strategies.
  *
- * Blank path = what to do with Normal (white) bases.
- * Rare path  = what to do with junk / under-rolled rares you already hold.
- * These are scored independently so the best blank craft is never forced
- * onto rare disposition (and vice versa).
+ * Entry = how to acquire a tablet (buy white / buy magic / buy rare / skip).
+ * Magics are never listed. A blue is **promising** (has A or S → regal+ex) or
+ * **trash** (no A/S → alch). Blank+T+A is a lottery over those states; bought
+ * cheapest magics are always trash.
  */
 
-/** How to turn a blank (Normal) tablet into something sellable */
+/** How to acquire / open a craft (not “what to do with a hovered rare”). */
 export type BlankCraftStrategy =
-  /** Buy/keep whites → Alchemy (classic mass rare flip) */
+  /**
+   * Buy/keep whites → Alchemy (classic mass rare flip).
+   * Dominated by Magic-Pipeline when magics exist; kept for explicit solves.
+   */
   | "Scour-Alch"
   /**
-   * Transmute → Augment → branch Regal/Alch → optional Exalt
-   * (see strat_reco.md Magic-Pipeline state machine)
+   * Buy white → Transmute+Aug → promising (A/S) regal+ex / trash alch
    */
   | "Magic-Pipeline"
-  /** Don't craft blanks; only process rares you already have */
+  /**
+   * Skip whites; buy cheapest 10-use magics. Those books are trash-only,
+   * so always alch (no promising regal lottery).
+   */
+  | "Buy-Magic"
+  /** Skip craft; buy cheapest 10-use rares and apply rare policy */
+  | "Buy-Rare"
+  /** Don't buy anything; only process inventory you already have */
   | "Skip-Blanks";
 
 /** How to dispose of a junk / mid / under-rolled rare */
@@ -38,8 +47,10 @@ export type ModQualityTier = "S" | "A" | "B" | "Junk";
 
 export const BLANK_STRATEGY_LABELS: Record<BlankCraftStrategy, string> = {
   "Scour-Alch": "Blank→Alch",
-  "Magic-Pipeline": "Magic Pipeline",
-  "Skip-Blanks": "Skip Blanks",
+  "Magic-Pipeline": "Blank→Magic",
+  "Buy-Magic": "Buy Magics",
+  "Buy-Rare": "Buy Rares",
+  "Skip-Blanks": "Skip Buys",
 };
 
 export const RARE_STRATEGY_LABELS: Record<RareDispositionStrategy, string> = {

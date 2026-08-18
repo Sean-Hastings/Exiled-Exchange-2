@@ -10,6 +10,7 @@ import {
 import type { ModWeightOpts } from "./mod-weights";
 import {
   buildTierSaleTable,
+  entrySpend,
   solveRareValues,
   type CraftPolicy,
 } from "./tablet-mdp";
@@ -109,7 +110,7 @@ function prepareBatchLaw(input: BatchLawInput): {
     : undefined;
   const sales = buildTierSaleTable(market, baseId, wOpts);
   if (!sales) return null;
-  if (!Number.isFinite(sales.baseCost)) return null;
+  if (!Number.isFinite(entrySpend(sales, policy.blank))) return null;
 
   const { rareV } = solveRareValues(sales, policy);
   return {

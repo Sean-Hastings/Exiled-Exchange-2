@@ -138,6 +138,7 @@ export function applyTempleManualSurveyMarket(
     junkSellByBase,
     modValueMap,
     priceSource: {
+      ...market.priceSource,
       junkSellByBase: junkSources,
       modValueMap: modValueSources,
     },

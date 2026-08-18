@@ -4,6 +4,8 @@
  */
 import {
   corruptSaleEx,
+  entryDist,
+  entrySpend,
   RARE_TIERS,
   solveRareValues,
   type CraftPolicy,
@@ -62,8 +64,9 @@ export function sampleCraftPath(
   const maxChaos = opts?.maxChaosPerItem ?? 50;
   const usesReforge = policyUsesReforge(policy);
 
-  // Fail closed: non-finite blank cost must not fabricate spend=0 paths.
-  if (!Number.isFinite(sales.baseCost)) {
+  // Fail closed: non-finite entry spend must not fabricate spend=0 paths.
+  const spend0 = entrySpend(sales, policy.blank);
+  if (policy.blank === "Skip-Blanks" || !Number.isFinite(spend0)) {
     return {
       spend: Number.NaN,
       revenue: Number.NaN,
@@ -77,15 +80,9 @@ export function sampleCraftPath(
   const rareV =
     opts?.rareV ?? solveRareValues(sales, policy).rareV;
 
-  const dist =
-    policy.blank === "Magic-Pipeline" ? sales.magicDist : sales.alchDist;
-  const orbCost =
-    policy.blank === "Magic-Pipeline"
-      ? sales.magicOrbCost
-      : sales.alchOrbCost;
+  const dist = entryDist(sales, policy.blank);
 
-  let spend =
-    sales.baseCost + (Number.isFinite(orbCost) ? orbCost : 0);
+  let spend = spend0;
 
   let tier = pickTier(dist, rng);
   let corrupted = false;

@@ -139,9 +139,10 @@ function sellComboCensus(baseId: string, safetyMax = 40) {
     afterAbDrop: Math.min(safetyMax, afterAbDrop),
     afterSbDrop: Math.min(safetyMax, afterSbDrop),
     truncatedAt40: afterAbDrop > safetyMax,
-    fullRefreshPrevious: 2 + 1 + Math.min(safetyMax, previous),
-    fullRefreshA: 2 + 1 + Math.min(safetyMax, afterAbDrop),
-    fullRefreshB: 2 + 1 + Math.min(safetyMax, afterSbDrop),
+    fullRefreshPrevious: 2 + 4 + Math.min(safetyMax, previous),
+    fullRefreshA: 2 + 4 + Math.min(safetyMax, afterAbDrop),
+    // 2 blank + 2 magic + 2 junk flow snaps + SAB sells
+    fullRefreshB: 2 + 4 + Math.min(safetyMax, afterSbDrop),
   };
 }
 
@@ -514,8 +515,8 @@ describe("sab-combo-plan", () => {
         SB: 4,
         allS3: 0,
         sMods: 2,
-        refreshA: 17,
-        refreshB: 13,
+        refreshA: 20,
+        refreshB: 16,
       },
       {
         base: "delirium",
@@ -526,8 +527,8 @@ describe("sab-combo-plan", () => {
         SB: 1,
         allS3: 0,
         sMods: 1,
-        refreshA: 14,
-        refreshB: 13,
+        refreshA: 17,
+        refreshB: 16,
       },
       {
         base: "expedition",
@@ -538,8 +539,8 @@ describe("sab-combo-plan", () => {
         SB: 4,
         allS3: 0,
         sMods: 2,
-        refreshA: 22,
-        refreshB: 18,
+        refreshA: 25,
+        refreshB: 21,
       },
       {
         base: "ritual",
@@ -550,8 +551,8 @@ describe("sab-combo-plan", () => {
         SB: 3,
         allS3: 0,
         sMods: 1,
-        refreshA: 12,
-        refreshB: 9,
+        refreshA: 15,
+        refreshB: 12,
       },
       {
         base: "overseer",
@@ -562,8 +563,8 @@ describe("sab-combo-plan", () => {
         SB: 2,
         allS3: 0,
         sMods: 2,
-        refreshA: 26,
-        refreshB: 24,
+        refreshA: 29,
+        refreshB: 27,
       },
       {
         base: "abyss",
@@ -574,8 +575,8 @@ describe("sab-combo-plan", () => {
         SB: 1,
         allS3: 0,
         sMods: 1,
-        refreshA: 25,
-        refreshB: 24,
+        refreshA: 28,
+        refreshB: 27,
       },
       {
         base: "irradiated",
@@ -586,8 +587,8 @@ describe("sab-combo-plan", () => {
         SB: 2,
         allS3: 0,
         sMods: 2,
-        refreshA: 20,
-        refreshB: 18,
+        refreshA: 23,
+        refreshB: 21,
       },
       {
         base: "temple",
@@ -598,8 +599,8 @@ describe("sab-combo-plan", () => {
         SB: 4,
         allS3: 0,
         sMods: 1,
-        refreshA: 8,
-        refreshB: 4,
+        refreshA: 11,
+        refreshB: 7,
       },
     ]);
   });

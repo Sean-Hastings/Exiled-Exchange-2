@@ -7,6 +7,7 @@ import {
   buildTierSaleTable,
   clearChaosTransitionCache,
   defaultPolicy,
+  expectedUnderDist,
   magicOnePOneSBranchProbs,
   recommendPolicy,
   solveOptimalRarePolicy,
@@ -204,6 +205,11 @@ describe("tablet-mdp", () => {
     // Temple S-mods are suffix-only (crystal, waystones) — combined-pool
     // (1-pS)^2 understates P(has S) vs true 1p+1s.
     expect(branch!.pHasS).toBeGreaterThan(0.05);
+    expect(branch!.pPromising).toBeCloseTo(
+      branch!.pHasS + branch!.pHasAOnly,
+      9,
+    );
+    expect(branch!.pPromising + branch!.pTrash).toBeCloseTo(1, 9);
     expect(branch!.pHasS + branch!.pHasAOnly + branch!.pJunk).toBeCloseTo(
       1,
       9,
@@ -253,5 +259,80 @@ describe("tablet-mdp", () => {
     expect(policy.rare.B).toBe("Chaos");
     expect(policy.corrupt.B).toBe(policy.corrupt.Trash);
     expect(policy.corrupt.B).toBe("Dump");
+  });
+
+  it("Buy-Magic is alch-only (bought blues are always trash)", () => {
+    const market = measuredFixture();
+    market.magicBuyByBase = { breach_tablet: 40 };
+    const buyMagic = solvePolicy(
+      market,
+      "breach_tablet",
+      defaultPolicy("Buy-Magic"),
+    )!;
+    const fromBlank = solvePolicy(
+      market,
+      "breach_tablet",
+      defaultPolicy("Magic-Pipeline"),
+    )!;
+    expect(buyMagic.sales.pMagicPromising).toBeGreaterThan(0);
+    expect(buyMagic.sales.pMagicPromising + buyMagic.sales.pMagicTrash).toBeCloseTo(
+      1,
+      9,
+    );
+    const alchCont = expectedUnderDist(buyMagic.sales.alchDist, buyMagic.rareV);
+    const pipeCont = expectedUnderDist(
+      fromBlank.sales.magicDist,
+      fromBlank.rareV,
+    );
+    expect(buyMagic.whiteEV).toBeCloseTo(
+      alchCont - 40 - buyMagic.sales.alchOrbCost,
+      5,
+    );
+    expect(alchCont).toBeLessThan(pipeCont);
+  });
+
+  it("Buy-Magic beats Magic-Pipeline when magics are cheaper than blank+T+A", () => {
+    const market = measuredFixture();
+    market.basePrices.breach_tablet = 200;
+    market.magicBuyByBase = { breach_tablet: 20 };
+    const buyMagic = solvePolicy(
+      market,
+      "breach_tablet",
+      defaultPolicy("Buy-Magic"),
+    )!;
+    const fromBlank = solvePolicy(
+      market,
+      "breach_tablet",
+      defaultPolicy("Magic-Pipeline"),
+    )!;
+    expect(Number.isFinite(buyMagic.whiteEV)).toBe(true);
+    expect(buyMagic.whiteEV).toBeGreaterThan(fromBlank.whiteEV);
+    const rec = recommendPolicy(market, "breach_tablet");
+    expect(rec!.policy.blank).toBe("Buy-Magic");
+  });
+
+  it("Magic-Pipeline beats Buy-Magic when trash blues cost about blank+T+A", () => {
+    const market = measuredFixture();
+    const fromBlank = solvePolicy(
+      market,
+      "breach_tablet",
+      defaultPolicy("Magic-Pipeline"),
+    )!;
+    market.magicBuyByBase = {
+      breach_tablet: fromBlank.sales.baseCost + fromBlank.sales.magicOrbCost,
+    };
+    const rec = recommendPolicy(market, "breach_tablet");
+    expect(rec!.policy.blank).toBe("Magic-Pipeline");
+  });
+
+  it("Buy-Rare uses Trash continuation minus junk buy", () => {
+    const market = measuredFixture();
+    market.junkBuyByBase = { breach_tablet: 15 };
+    const hit = solvePolicy(
+      market,
+      "breach_tablet",
+      defaultPolicy("Buy-Rare"),
+    )!;
+    expect(hit.whiteEV).toBeCloseTo(hit.rareV.Trash - 15, 5);
   });
 });

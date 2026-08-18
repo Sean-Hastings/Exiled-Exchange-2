@@ -91,10 +91,16 @@ const actionLabel = computed(() => {
       return "REFORGE 3:1";
     case "MERCHANT":
       return "MERCHANT LIST";
-    case "EXALT":
-      return "EXALT SLAM";
-    default:
-      return "";
+            case "EXALT":
+              return "EXALT SLAM";
+            case "ALCH":
+              return "ALCH";
+            case "REGAL":
+              return "REGAL + EXALT";
+            case "TRANSMUTE":
+              return "T+A (MAGIC PIPE)";
+            default:
+              return "";
   }
 });
 
@@ -103,9 +109,12 @@ const bannerClass = computed(() => {
     case "SELL_AS_IS":
     case "MERCHANT":
       return "bg-green-900/60 border-green-600 text-green-100";
-    case "REROLL":
-    case "EXALT":
-      return "bg-yellow-900/50 border-yellow-600 text-yellow-100";
+            case "REROLL":
+            case "EXALT":
+            case "ALCH":
+            case "REGAL":
+            case "TRANSMUTE":
+              return "bg-yellow-900/50 border-yellow-600 text-yellow-100";
     case "VAAL_SLAM":
     case "REFORGE":
       return "bg-red-900/50 border-red-600 text-red-100";

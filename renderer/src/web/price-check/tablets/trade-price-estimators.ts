@@ -33,7 +33,7 @@ export const HOT_MARKET_UNDERCUT = 1 - SELL_UNDERCUT_PCT;
 
 /**
  * Wall-clock gap between Instant Buyout probe#1 and probe#2 for flow detection.
- * Sync bookends other trade work (junk/combo sells) between snaps; if that
+ * Sync bookends other trade work (junk/magic/combo sells) between snaps; if that
  * middle work finishes early, idle-wait the remainder so the gap ≈ this value.
  * Gap duration is detection-only — never scales classify / mean-of-B math.
  */
@@ -81,6 +81,7 @@ export interface ExaltFx {
   transmute?: number;
   augmentation?: number;
   scouring?: number;
+  annulment?: number;
   greaterExalted?: number;
   perfectExalted?: number;
 }
@@ -165,6 +166,9 @@ export function listingAmountToExalt(
   }
   if (c === "scour" || c === "scouring" || c === "orb-of-scouring") {
     return orbCost(fx.scouring ?? 0) ?? 0;
+  }
+  if (c === "annul" || c === "annulment" || c === "orb-of-annulment") {
+    return orbCost(fx.annulment ?? fx.scouring ?? 0) ?? 0;
   }
   if (c === "greater-exalted-orb" || c === "greater-exalted") {
     return orbCost(fx.greaterExalted);

@@ -309,8 +309,10 @@
                 :digits="0"
                 suffix="ex"
               />
-              · base
-              {{ fmtEx(selectedExplain.baseCost, 0) }}ex · measured
+              · blank
+              {{ fmtEx(selectedExplain.baseCost, 0) }}ex · magic
+              {{ fmtEx(selectedExplain.magicBuyEx, 0) }}ex · rare
+              {{ fmtEx(selectedExplain.rareBuyEx, 0) }}ex · measured
               {{ ((selectedExplain.measuredFrac || 0) * 100).toFixed(0) }}%
             </span>
             <span class="text-sky-200/70">

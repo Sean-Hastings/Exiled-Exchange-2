@@ -260,6 +260,17 @@ export function modQualityTierForBase(
   return tierFromValueScore(modId);
 }
 
+/** True if the 1p1s (or hovered magic) has an A or S worth keeping. */
+export function isPromisingMagic(
+  modIds: readonly string[],
+  baseId: string | undefined,
+): boolean {
+  return modIds.some((id) => {
+    const q = modQualityTierForBase(baseId, id);
+    return q === "S" || q === "A";
+  });
+}
+
 /**
  * @deprecated Prefer {@link modQualityTierForBase} with a baseId.
  * Without a base, only valueScore fallback applies (no shared global map).

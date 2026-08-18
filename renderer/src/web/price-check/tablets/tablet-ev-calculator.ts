@@ -4,7 +4,7 @@ import {
   weightOptsForBase,
   type ModWeightOpts,
 } from "./mod-weights";
-import { countTier } from "./mod-tiers";
+import { countTier, isPromisingMagic } from "./mod-tiers";
 import {
   buildRareTierJudgementRegexes,
   type TierJudgementRegex,
@@ -28,6 +28,9 @@ import type { ModRollPriceCurve } from "./mod-roll-price-curve";
 import {
   defaultPolicy,
   expectedUnderDist,
+  candidateBlankStrategies,
+  entryDist,
+  entrySpend,
   magicOnePOneSBranchProbs,
   policyToLegacyRare,
   recommendPolicy,
@@ -64,6 +67,18 @@ export interface MarketPriceCache {
    * the long tail as worth 0ex (which makes EV ≈ −baseCost).
    */
   junkSellByBase?: Record<string, number>;
+  /**
+   * Buy mean-of-B for 10-use rares (same SEARCH as {@link junkSellByBase}).
+   * Not written into {@link basePrices}.
+   */
+  junkBuyByBase?: Record<string, number>;
+  /** Sell floor for 10-use magics (trash-magic SEARCH). */
+  magicSellByBase?: Record<string, number>;
+  /**
+   * Buy mean-of-B for 10-use magics (same SEARCH as {@link magicSellByBase}).
+   * Not written into {@link basePrices}.
+   */
+  magicBuyByBase?: Record<string, number>;
   /**
    * Same-side / multi-affix / solo-B sell samples (not stamped onto 1p1s grid).
    * Fed into {@link buildTierSaleTable} via modsToRareTier.
@@ -145,6 +160,10 @@ export interface BaseStrategyExplain {
   baseId: string;
   baseName: string;
   baseCost: number;
+  /** 10-use magic buy mean-of-B (NaN until measured). */
+  magicBuyEx: number;
+  /** 10-use rare buy mean-of-B from junk SEARCH (NaN until measured). */
+  rareBuyEx: number;
   dumpFloorEx: number;
   dumpFloorSource: PriceSource;
   /** Live-combo coverage fraction (diagnostic; not used to blend sales) */
@@ -184,7 +203,10 @@ export type TabletAction =
   | "VAAL_SLAM"
   | "REFORGE"
   | "MERCHANT"
-  | "EXALT";
+  | "EXALT"
+  | "ALCH"
+  | "REGAL"
+  | "TRANSMUTE";
 
 export interface TabletItemEvaluation {
   currentMarketPrice: number;
@@ -308,6 +330,18 @@ export class TabletEVEngine {
         ...this.marketCache.junkSellByBase,
         ...cache.junkSellByBase,
       },
+      junkBuyByBase: {
+        ...this.marketCache.junkBuyByBase,
+        ...cache.junkBuyByBase,
+      },
+      magicSellByBase: {
+        ...this.marketCache.magicSellByBase,
+        ...cache.magicSellByBase,
+      },
+      magicBuyByBase: {
+        ...this.marketCache.magicBuyByBase,
+        ...cache.magicBuyByBase,
+      },
       measuredAffixSamples: cache.measuredAffixSamples
         ? [...cache.measuredAffixSamples]
         : this.marketCache.measuredAffixSamples
@@ -325,6 +359,18 @@ export class TabletEVEngine {
         junkSellByBase: {
           ...this.marketCache.priceSource?.junkSellByBase,
           ...cache.priceSource?.junkSellByBase,
+        },
+        junkBuyByBase: {
+          ...this.marketCache.priceSource?.junkBuyByBase,
+          ...cache.priceSource?.junkBuyByBase,
+        },
+        magicSellByBase: {
+          ...this.marketCache.priceSource?.magicSellByBase,
+          ...cache.priceSource?.magicSellByBase,
+        },
+        magicBuyByBase: {
+          ...this.marketCache.priceSource?.magicBuyByBase,
+          ...cache.priceSource?.magicBuyByBase,
         },
         modValueMap: {
           ...this.marketCache.priceSource?.modValueMap,
@@ -350,11 +396,7 @@ export class TabletEVEngine {
     );
 
     const blankCandidates: Array<PathEV & { strategy: BlankCraftStrategy }> = [];
-    for (const blank of [
-      "Skip-Blanks",
-      "Scour-Alch",
-      "Magic-Pipeline",
-    ] as BlankCraftStrategy[]) {
+    for (const blank of candidateBlankStrategies()) {
       const rarePolicy = recommended?.policy.rare ?? defaultPolicy().rare;
       const corruptPolicy =
         recommended?.policy.corrupt ?? defaultPolicy().corrupt;
@@ -369,26 +411,20 @@ export class TabletEVEngine {
         this.weightOpts,
       );
       if (!hit) continue;
-      const orb =
-        blank === "Magic-Pipeline"
-          ? hit.sales.magicOrbCost
-          : blank === "Scour-Alch"
-            ? hit.sales.alchOrbCost
-            : 0;
-      const gross = expectedUnderDist(
-        blank === "Magic-Pipeline" ? hit.sales.magicDist : hit.sales.alchDist,
-        hit.sales.uncorrupted,
-      );
+      const spend = entrySpend(hit.sales, blank);
+      const dist = entryDist(hit.sales, blank);
+      const gross =
+        blank === "Skip-Blanks"
+          ? 0
+          : expectedUnderDist(dist, hit.sales.uncorrupted);
       blankCandidates.push({
         strategy: blank,
         netEV: hit.whiteEV,
-        costPerAttempt: orb,
-        expectedGross: blank === "Skip-Blanks" ? 0 : gross,
+        costPerAttempt: spend,
+        expectedGross: gross,
         roiPercentage: pathRoi(
           hit.whiteEV,
-          blank === "Skip-Blanks"
-            ? 0
-            : (Number.isFinite(baseCost) ? baseCost : 0) + orb,
+          blank === "Skip-Blanks" ? 0 : spend,
         ),
       });
     }
@@ -528,6 +564,8 @@ export class TabletEVEngine {
         baseId,
         baseName: baseId,
         baseCost: Number.NaN,
+        magicBuyEx: Number.NaN,
+        rareBuyEx: Number.NaN,
         dumpFloorEx: Number.NaN,
         dumpFloorSource: "measured",
         measuredFrac: 0,
@@ -599,11 +637,7 @@ export class TabletEVEngine {
     );
 
     const blank: StrategyBreakdown[] = [];
-    for (const blankStrat of [
-      "Skip-Blanks",
-      "Scour-Alch",
-      "Magic-Pipeline",
-    ] as BlankCraftStrategy[]) {
+    for (const blankStrat of candidateBlankStrategies()) {
       const rareSide = recommended?.policy.rare ?? defaultPolicy().rare;
       const corruptSide =
         recommended?.policy.corrupt ?? defaultPolicy().corrupt;
@@ -618,16 +652,13 @@ export class TabletEVEngine {
         this.weightOpts,
       );
       if (!hit) continue;
-      const dist =
-        blankStrat === "Magic-Pipeline"
-          ? hit.sales.magicDist
-          : hit.sales.alchDist;
+      const dist = entryDist(hit.sales, blankStrat);
       const outcomes: OutcomeSlice[] =
         blankStrat === "Skip-Blanks"
           ? [
               {
                 kind: "trash",
-                label: "skip (no craft)",
+                label: "skip (no buy)",
                 prob: 1,
                 avgValueEx: 0,
                 revenueEx: 0,
@@ -648,12 +679,7 @@ export class TabletEVEngine {
                 priceSource: hit.sales.uncorruptedSource[tier],
               };
             }).filter((o) => o.prob > 1e-9);
-      const orb =
-        blankStrat === "Magic-Pipeline"
-          ? hit.sales.magicOrbCost
-          : blankStrat === "Scour-Alch"
-            ? hit.sales.alchOrbCost
-            : 0;
+      const spend = entrySpend(hit.sales, blankStrat);
       blank.push({
         strategy: blankStrat,
         path: "blank",
@@ -661,18 +687,17 @@ export class TabletEVEngine {
           blankStrat === "Skip-Blanks"
             ? 0
             : outcomes.reduce((s, o) => s + o.revenueEx, 0),
-        costEx:
-          blankStrat === "Skip-Blanks"
-            ? 0
-            : (Number.isFinite(baseCost) ? baseCost : 0) + orb,
+        costEx: blankStrat === "Skip-Blanks" ? 0 : spend,
         netEV: hit.whiteEV,
         outcomes,
         note:
           blankStrat === "Skip-Blanks"
-            ? "Do not buy/craft whites"
-            : "MDP blank→rare{S,A,Trash}; trash=" +
-              rareSide.Trash +
-              " (closed-form until-hit)",
+            ? "Do not buy whites/magics/rares"
+            : blankStrat === "Buy-Magic"
+              ? "Bought magics are always trash → alch (no promising regal lottery)"
+              : blankStrat === "Buy-Rare"
+                ? "Buy cheapest 10-use rares; apply rare policy"
+                : "Blank+T+A: promising (A/S) → regal+ex, trash → alch",
       });
     }
 
@@ -734,6 +759,8 @@ export class TabletEVEngine {
       baseId,
       baseName: base.name,
       baseCost,
+      magicBuyEx: measured(this.marketCache.magicBuyByBase?.[baseId]),
+      rareBuyEx: measured(this.marketCache.junkBuyByBase?.[baseId]),
       dumpFloorEx: dump,
       dumpFloorSource: dumpInfo.source,
       measuredFrac,
@@ -1012,6 +1039,29 @@ export class TabletEVEngine {
       });
     }
 
+    const rarity = normalizeTabletRarity(parsedTablet.rarity);
+    if (rarity === "normal") {
+      return pack({
+        action: "TRANSMUTE",
+        explanation: `Normal — Transmute+Aug into the magic pipeline (never alch whites). Entry: ${baseEV.blankStrategy}.`,
+        rareStrategy,
+      });
+    }
+    if (rarity === "magic") {
+      if (isPromisingMagic(parsedTablet.parsedMods.map((m) => m.id), parsedTablet.tabletBaseKey)) {
+        return pack({
+          action: "REGAL",
+          explanation: `Promising magic (A/S) — Regal then Exalt. Entry: ${baseEV.blankStrategy}.`,
+          rareStrategy,
+        });
+      }
+      return pack({
+        action: "ALCH",
+        explanation: `Trash magic (no A/S) — Alch to rare. Bought blues are this state. Entry: ${baseEV.blankStrategy}.`,
+        rareStrategy,
+      });
+    }
+
     if (sCount >= 2 || (sCount >= 1 && aCount >= 1)) {
       return pack({
         action: "SELL_AS_IS",
@@ -1090,7 +1140,7 @@ export class TabletEVEngine {
     const simPolicy: CraftPolicy =
       policy.blank !== "Skip-Blanks"
         ? policy
-        : defaultPolicy("Scour-Alch");
+        : defaultPolicy("Magic-Pipeline");
 
     const result = simulatePolicy(
       this.marketCache,
@@ -1406,6 +1456,16 @@ export class TabletEVEngine {
     }
     return best;
   }
+}
+
+function normalizeTabletRarity(
+  rarity: string | undefined,
+): "normal" | "magic" | "rare" | "other" {
+  const s = String(rarity ?? "").trim().toLowerCase();
+  if (s === "normal" || s === "white") return "normal";
+  if (s === "magic") return "magic";
+  if (s === "rare") return "rare";
+  return "other";
 }
 
 function actionForRareStrategy(strat: RareDispositionStrategy): TabletAction {

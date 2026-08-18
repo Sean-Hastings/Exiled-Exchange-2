@@ -70,12 +70,14 @@ import {
 export type { MarketSyncDebug } from "./market-sync-debug";
 
 /** Bump when conversion / estimator semantics change — invalidates persisted cache. */
-export const MARKET_SYNC_REVISION = 29;
+export const MARKET_SYNC_REVISION = 31;
 
-/** Buy blanks: enough depth for buy@N. Exalted-only so API sort ≈ exalt. */
+/** Buy: enough depth for buy@N. Any listed currency; convert to exalt client-side. */
 const BUY_LISTING_SAMPLE = 30;
-/** Sell: 3 FETCH batches of 10. Stop early on first kept ≥24h listing. Junk uses the same. */
+/** Sell: 3 FETCH batches of 10. Stop early on first kept ≥24h listing. */
 const SELL_LISTING_SAMPLE = 30;
+/** Trash magic/rare books: full 30 so sell wall + buy mean-of-B share one SEARCH. */
+const TRASH_LISTING_SAMPLE = 30;
 /** Survey fetch depth — fewer FETCH tokens per search. */
 const SURVEY_LISTING_SAMPLE = 8;
 const FETCH_BATCH = 10;
@@ -523,10 +525,10 @@ function buildSearchTrace(opts: {
  * - online    = In Person (Online) ONLY — excludes marketplace
  * - any       = includes offline ghosts
  *
+ * One SEARCH per snap — any listed currency, converted to exalt.
  * Instant Buyout (`securable`) only unless `includeAvailable` is on, then
  * fall back to `available` when the marketplace book is empty. `forceStatus`
  * locks one band (flow probe #2 / mkt-only snaps).
- * One exalted-only SEARCH per snap so API sort ≈ exalt.
  */
 async function searchBuyPriceEx(
   typeName: string,
@@ -578,7 +580,7 @@ async function searchBuyPriceEx(
       : allBands.filter((b) => b.status === "securable");
 
   for (const band of bands) {
-    const body = blankTabletQuery(typeName, band.status, "exalted");
+    const body = blankTabletQuery(typeName, band.status);
     const hit = await searchPricedListings(
       body,
       leagueId,
@@ -595,7 +597,7 @@ async function searchBuyPriceEx(
     traces.push(
       buildSearchTrace({
         kind: band.kind,
-        label: `${ctx} ${band.status} · exalted-only (sort≈exalt)`,
+        label: `${ctx} ${band.status} · any-currency (sort by listed amount)`,
         typeName,
         statusOption: band.status,
         queryBody: body,
@@ -604,7 +606,7 @@ async function searchBuyPriceEx(
         rows: hit.rows,
         priced,
         estimate: price,
-        estimateNote: `${buyEstimateNote(priced.length, buyDepth)} · exalted-only (${band.note})`,
+        estimateNote: `${buyEstimateNote(priced.length, buyDepth)} · any-currency (${band.note})`,
         floorEx: buyFloor,
         ceilingEx: buyCeiling,
       }),
@@ -765,6 +767,161 @@ async function searchSellPricePreferMarket(
   return fallback!;
 }
 
+/**
+ * One SEARCH for a 10-use rarity book (magic or rare). FETCH the full sample
+ * (no sell early-stop) so sell-wall and buy mean-of-B share the same IDs.
+ * Instant Buyout first; optional `available` fallback when that book is empty.
+ */
+async function searchTrashBookPreferMarket(
+  buildBody: (status: "securable" | "available") => TabletTradeSearchBody,
+  leagueId: string,
+  fx: ExaltFx,
+  progress: ProgressFn,
+  ctx: string,
+  typeName: string,
+  isCancelled: () => boolean,
+  buyFloor: number,
+  buyCeiling: number,
+  sellCeiling: number,
+  buyCountB: number,
+  includeAvailable: boolean,
+  kinds: { sell: "sell-junk" | "sell-magic"; buy: "buy-junk" | "buy-magic" },
+  opts?: {
+    forceStatus?: "securable" | "available";
+    regime?: MarketFlowRegime;
+  },
+): Promise<{
+  sell: number | null;
+  buy: number | null;
+  buyPriced: PricedListing[];
+  status: "securable" | "available";
+  sellTrace: SearchDebugTrace;
+  buyTrace: SearchDebugTrace;
+}> {
+  const statuses = opts?.forceStatus
+    ? ([opts.forceStatus] as const)
+    : includeAvailable
+      ? (["securable", "available"] as const)
+      : (["securable"] as const);
+  let fallback: {
+    sell: number | null;
+    buy: number | null;
+    buyPriced: PricedListing[];
+    status: "securable" | "available";
+    sellTrace: SearchDebugTrace;
+    buyTrace: SearchDebugTrace;
+  } | null = null;
+  const kEff = effectiveBuyCountForRegime(opts?.regime ?? "unknown", buyCountB);
+  const fetchCeiling = Math.max(buyCeiling, sellCeiling);
+
+  for (const status of statuses) {
+    const body = buildBody(status);
+    const label = `${ctx} ${status}`;
+    try {
+      const hit = await searchPricedListings(
+        body,
+        leagueId,
+        fx,
+        progress,
+        label,
+        isCancelled,
+        0,
+        fetchCeiling,
+        TRASH_LISTING_SAMPLE,
+      );
+      const sellPriced = hit.priced.filter((p) => p.priceEx <= sellCeiling);
+      const buyPriced = hit.priced.filter(
+        (p) => p.priceEx >= buyFloor && p.priceEx <= buyCeiling,
+      );
+      const sellDetail = estimateSellPriceDetail(sellPriced, {
+        ceilingEx: sellCeiling,
+      });
+      const buy = estimateBuyPriceMeanOfCheapestEx(buyPriced, kEff);
+      const sellTrace = buildSearchTrace({
+        kind: kinds.sell,
+        label,
+        typeName,
+        statusOption: status,
+        queryBody: body,
+        queryId: hit.queryId,
+        totalHits: hit.totalHits,
+        rows: hit.rows,
+        priced: sellPriced,
+        estimate: sellDetail.price,
+        estimateNote: `${sellDetail.note} · ${status} · 10-use trash book`,
+        floorEx: 0,
+        ceilingEx: sellCeiling,
+      });
+      const buyTrace = buildSearchTrace({
+        kind: kinds.buy,
+        label: `${label} buy mean@${kEff}`,
+        typeName,
+        statusOption: status,
+        queryBody: body,
+        queryId: hit.queryId,
+        totalHits: hit.totalHits,
+        rows: hit.rows,
+        priced: buyPriced,
+        estimate: buy,
+        estimateNote: `${buyMeanEstimateNote(buyPriced.length, kEff)} · reused SEARCH · 10-use`,
+        floorEx: buyFloor,
+        ceilingEx: buyCeiling,
+      });
+      const result = {
+        sell: sellDetail.price,
+        buy,
+        buyPriced,
+        status,
+        sellTrace,
+        buyTrace,
+      };
+      if (
+        (result.sell != null && isFinitePositive(result.sell)) ||
+        (result.buy != null && isFinitePositive(result.buy))
+      ) {
+        return result;
+      }
+      if (!fallback) fallback = result;
+    } catch (e) {
+      const err = e instanceof Error ? e.message : String(e);
+      const empty = {
+        sell: null as number | null,
+        buy: null as number | null,
+        buyPriced: [] as PricedListing[],
+        status,
+        sellTrace: buildSearchTrace({
+          kind: kinds.sell,
+          label,
+          typeName,
+          statusOption: status,
+          rows: [],
+          priced: [],
+          estimate: null,
+          estimateNote: "error",
+          floorEx: 0,
+          ceilingEx: sellCeiling,
+          error: err,
+        }),
+        buyTrace: buildSearchTrace({
+          kind: kinds.buy,
+          label,
+          typeName,
+          statusOption: status,
+          rows: [],
+          priced: [],
+          estimate: null,
+          estimateNote: "error",
+          floorEx: buyFloor,
+          ceilingEx: buyCeiling,
+          error: err,
+        }),
+      };
+      if (!fallback) fallback = empty;
+    }
+  }
+  return fallback!;
+}
+
 function fullUsesFilter(minUses = FULL_USES) {
   return {
     id: USES_REMAINING_STAT,
@@ -894,9 +1051,10 @@ function multiModTabletQuery(
   };
 }
 
-/** Broad junk/rare floor — rolled rares of this base with uses left. */
-function junkTabletQuery(
+/** Broad 10-use rarity book — cheapest Instant Buyout listings of this base. */
+function rarityTabletQuery(
   baseName: string,
+  rarity: "rare" | "magic",
   status: "securable" | "available" = "securable",
 ): TabletTradeSearchBody {
   return {
@@ -906,15 +1064,14 @@ function junkTabletQuery(
       stats: [
         {
           type: "and",
-          filters: [fullUsesFilter(1)],
+          filters: [fullUsesFilter(FULL_USES)],
         },
       ],
       filters: {
         type_filters: {
           filters: {
             category: { option: "map.tablet" },
-            // Rare only — whites would collapse junk ≈ blank buy
-            rarity: { option: "rare" },
+            rarity: { option: rarity },
           },
         },
         trade_filters: {
@@ -926,6 +1083,22 @@ function junkTabletQuery(
     },
     sort: { price: "asc" },
   };
+}
+
+/** Trash rare floor + rare buy — same SEARCH. Whites would collapse ≈ blank buy. */
+function junkTabletQuery(
+  baseName: string,
+  status: "securable" | "available" = "securable",
+): TabletTradeSearchBody {
+  return rarityTabletQuery(baseName, "rare", status);
+}
+
+/** Trash magic floor + magic buy — same SEARCH. */
+function magicTabletQuery(
+  baseName: string,
+  status: "securable" | "available" = "securable",
+): TabletTradeSearchBody {
+  return rarityTabletQuery(baseName, "magic", status);
 }
 
 export interface MarketSyncResult {
@@ -946,6 +1119,9 @@ export function cloneMarketCache(src: MarketPriceCache): MarketPriceCache {
     modValueMap: { ...src.modValueMap },
     modPremiums: src.modPremiums ? { ...src.modPremiums } : {},
     junkSellByBase: src.junkSellByBase ? { ...src.junkSellByBase } : {},
+    junkBuyByBase: src.junkBuyByBase ? { ...src.junkBuyByBase } : {},
+    magicSellByBase: src.magicSellByBase ? { ...src.magicSellByBase } : {},
+    magicBuyByBase: src.magicBuyByBase ? { ...src.magicBuyByBase } : {},
     measuredAffixSamples: src.measuredAffixSamples
       ? src.measuredAffixSamples.map((s) => ({
           ...s,
@@ -972,6 +1148,15 @@ export function cloneMarketCache(src: MarketPriceCache): MarketPriceCache {
           junkSellByBase: src.priceSource.junkSellByBase
             ? { ...src.priceSource.junkSellByBase }
             : undefined,
+          junkBuyByBase: src.priceSource.junkBuyByBase
+            ? { ...src.priceSource.junkBuyByBase }
+            : undefined,
+          magicSellByBase: src.priceSource.magicSellByBase
+            ? { ...src.priceSource.magicSellByBase }
+            : undefined,
+          magicBuyByBase: src.priceSource.magicBuyByBase
+            ? { ...src.priceSource.magicBuyByBase }
+            : undefined,
           modValueMap: src.priceSource.modValueMap
             ? { ...src.priceSource.modValueMap }
             : undefined,
@@ -996,6 +1181,14 @@ function comboKeyBelongsToBase(key: string, ids: Set<string>): boolean {
 /** Wipe blank buy only — keep last-refresh sells until junk+SAB replaces them. */
 export function clearBaseBuySlice(market: MarketPriceCache, baseId: string) {
   market.basePrices[baseId] = Number.NaN;
+  if (market.junkBuyByBase) delete market.junkBuyByBase[baseId];
+  if (market.magicBuyByBase) delete market.magicBuyByBase[baseId];
+  if (market.priceSource?.junkBuyByBase) {
+    delete market.priceSource.junkBuyByBase[baseId];
+  }
+  if (market.priceSource?.magicBuyByBase) {
+    delete market.priceSource.magicBuyByBase[baseId];
+  }
 }
 
 /**
@@ -1004,8 +1197,12 @@ export function clearBaseBuySlice(market: MarketPriceCache, baseId: string) {
  */
 export function clearBaseSellSlice(market: MarketPriceCache, baseId: string) {
   if (market.junkSellByBase) delete market.junkSellByBase[baseId];
+  if (market.magicSellByBase) delete market.magicSellByBase[baseId];
   if (market.priceSource?.junkSellByBase) {
     delete market.priceSource.junkSellByBase[baseId];
+  }
+  if (market.priceSource?.magicSellByBase) {
+    delete market.priceSource.magicSellByBase[baseId];
   }
   if (market.measuredAffixSamples) {
     market.measuredAffixSamples = market.measuredAffixSamples.filter(
@@ -1050,14 +1247,28 @@ export function clearBaseMarketSlice(
 function ensurePriceSource(market: MarketPriceCache) {
   if (!market.priceSource) market.priceSource = {};
   if (!market.priceSource.junkSellByBase) market.priceSource.junkSellByBase = {};
+  if (!market.priceSource.junkBuyByBase) market.priceSource.junkBuyByBase = {};
+  if (!market.priceSource.magicSellByBase) {
+    market.priceSource.magicSellByBase = {};
+  }
+  if (!market.priceSource.magicBuyByBase) market.priceSource.magicBuyByBase = {};
   if (!market.priceSource.modValueMap) market.priceSource.modValueMap = {};
 }
 
-function stampMeasuredJunk(market: MarketPriceCache, baseId: string, price: number) {
-  market.junkSellByBase = market.junkSellByBase ?? {};
-  market.junkSellByBase[baseId] = price;
+function stampMeasuredMap(
+  market: MarketPriceCache,
+  field: "junkSellByBase" | "junkBuyByBase" | "magicSellByBase" | "magicBuyByBase",
+  baseId: string,
+  price: number,
+) {
+  market[field] = market[field] ?? {};
+  market[field]![baseId] = price;
   ensurePriceSource(market);
-  market.priceSource!.junkSellByBase![baseId] = "measured";
+  market.priceSource![field]![baseId] = "measured";
+}
+
+function stampMeasuredJunk(market: MarketPriceCache, baseId: string, price: number) {
+  stampMeasuredMap(market, "junkSellByBase", baseId, price);
 }
 
 /** Merge partial sync debug into the previous full trace (replace matching bases). */
@@ -1259,18 +1470,21 @@ export async function syncTabletMarketFromTrade(opts?: {
   };
 
   try {
+    type TrashSnap = Awaited<ReturnType<typeof searchTrashBookPreferMarket>>;
     type PendingBuy = {
       base: (typeof bases)[number];
       ctx: string;
       typeName: string;
-      snap1: NonNullable<Awaited<ReturnType<typeof searchBuyPriceEx>>>;
+      snap1: NonNullable<Awaited<ReturnType<typeof searchBuyPriceEx>>> | null;
+      magicSnap1: TrashSnap | null;
+      rareSnap1: TrashSnap | null;
       fetchedAt: number;
       entry: BaseBuyDebugTrace;
     };
     const pendingBuys: PendingBuy[] = [];
 
     // ── Bookend flow probe ──────────────────────────────────────────────
-    // Probe#1 (all bases) → per-base junk+SAB middle work burns the gap →
+    // Probe#1 (blank+magic+rare per base) → SAB middle work burns the gap →
     // per-base remainder wait → Probe#2 (last). Wall-clock between snap1→snap2
     // is the detection window only; classifyMarketFlow / mean-of-B do not use
     // gap ms. Variable gap: if middle work already took ≥ FLOW_PROBE_MS, skip
@@ -1304,6 +1518,11 @@ export async function syncTabletMarketFromTrade(opts?: {
         finalBuy: null,
         searches: [],
       };
+
+      let blankHit: NonNullable<
+        Awaited<ReturnType<typeof searchBuyPriceEx>>
+      > | null = null;
+      let typeNameUsed = typeNames[0] ?? base.name;
 
       for (const typeName of typeNames) {
         entry.typeNamesTried.push(typeName);
@@ -1352,9 +1571,8 @@ export async function syncTabletMarketFromTrade(opts?: {
           if (hit) {
             entry.searches.push(...hit.traces);
             if (isFinitePositive(hit.price)) {
-              const fetchedAt = Date.now();
-              // Provisional blank from snap1 alone (unknown → warm). Overwritten
-              // after probe#2 when Instant Buyout flow probe runs.
+              typeNameUsed = typeName;
+              blankHit = hit;
               commitBlankBuyPrice(
                 market,
                 base.id,
@@ -1363,14 +1581,6 @@ export async function syncTabletMarketFromTrade(opts?: {
                 buyCountB,
                 stats,
               );
-              pendingBuys.push({
-                base,
-                ctx,
-                typeName,
-                snap1: hit,
-                fetchedAt,
-                entry,
-              });
               break;
             }
           }
@@ -1396,13 +1606,76 @@ export async function syncTabletMarketFromTrade(opts?: {
           );
         }
       }
-      if (!pendingBuys.some((p) => p.base.id === base.id)) {
-        baseDebug.push(entry);
+      if (!blankHit) {
         console.warn(`[tablet-market] no 10-use blank listings for ${base.name}`);
       }
+
+      const trashForce = flowProbeEnabled
+        ? ("securable" as const)
+        : undefined;
+      progress(`Magic: ${base.name} #1`);
+      const magicSnap1 = await searchTrashBookPreferMarket(
+        (status) => magicTabletQuery(typeNameUsed, status),
+        leagueId,
+        fx,
+        progress,
+        `Magic: ${base.name} #1`,
+        typeNameUsed,
+        isCancelled,
+        buyFloor,
+        buyCeiling,
+        sellCeiling,
+        buyCountB,
+        includeAvailable,
+        { sell: "sell-magic", buy: "buy-magic" },
+        { forceStatus: trashForce, regime: "unknown" },
+      );
+      entry.searches.push(magicSnap1.buyTrace);
+      if (magicSnap1.buy != null && isFinitePositive(magicSnap1.buy)) {
+        stampMeasuredMap(market, "magicBuyByBase", base.id, magicSnap1.buy);
+      }
+      if (magicSnap1.sell != null && isFinitePositive(magicSnap1.sell)) {
+        stampMeasuredMap(market, "magicSellByBase", base.id, magicSnap1.sell);
+      }
+
+      progress(`Junk: ${base.name} #1`);
+      const rareSnap1 = await searchTrashBookPreferMarket(
+        (status) => junkTabletQuery(typeNameUsed, status),
+        leagueId,
+        fx,
+        progress,
+        `Junk: ${base.name} #1`,
+        typeNameUsed,
+        isCancelled,
+        buyFloor,
+        buyCeiling,
+        sellCeiling,
+        buyCountB,
+        includeAvailable,
+        { sell: "sell-junk", buy: "buy-junk" },
+        { forceStatus: trashForce, regime: "unknown" },
+      );
+      entry.searches.push(rareSnap1.buyTrace);
+      if (rareSnap1.buy != null && isFinitePositive(rareSnap1.buy)) {
+        stampMeasuredMap(market, "junkBuyByBase", base.id, rareSnap1.buy);
+      }
+      if (rareSnap1.sell != null && isFinitePositive(rareSnap1.sell)) {
+        stampMeasuredJunk(market, base.id, rareSnap1.sell);
+      }
+
+      pendingBuys.push({
+        base,
+        ctx,
+        typeName: typeNameUsed,
+        snap1: blankHit,
+        magicSnap1,
+        rareSnap1,
+        fetchedAt: Date.now(),
+        entry,
+      });
     }
 
-    // Middle work — per-base junk + SAB after all probe #1 (not serial per-base).
+    // Middle work — per-base trash books (rare+magic) + SAB after all probe #1.
     const pendingByBase = new Map(pendingBuys.map((p) => [p.base.id, p]));
     let comboDone = 0;
     // Closed SAB sell worklist (S/A solos, SS/SA/AA duos, all-S 3/4; no SB)
@@ -1415,37 +1688,10 @@ export async function syncTabletMarketFromTrade(opts?: {
       clearBaseSellSlice(market, base.id);
 
       const pending = pendingByBase.get(base.id);
-      if (pending) {
-        if (isCancelled()) throw new Error("Market sync cancelled");
-        const { typeName } = pending;
-        const junkCtx = `Junk: ${base.name}`;
-        progress(junkCtx);
-        const { price: junkPrice, trace } = await searchSellPricePreferMarket(
-          (status) => junkTabletQuery(typeName, status),
-          leagueId,
-          fx,
-          progress,
-          junkCtx,
-          typeName,
-          isCancelled,
-          sellCeiling,
-          SELL_LISTING_SAMPLE,
-          includeAvailable,
-        );
-        trace.kind = "sell-junk";
-        comboDebug.push({
-          baseId: base.id,
-          baseName: base.name,
-          comboKey: "__junk__",
-          finalSell: junkPrice,
-          search: trace,
-        });
-        if (junkPrice != null && isFinitePositive(junkPrice)) {
-          stampMeasuredJunk(market, base.id, junkPrice);
-        }
-      }
+      const typeName =
+        pending?.typeName ?? tradeTypeNamesForBase(base)[0] ?? base.name;
+      if (isCancelled()) throw new Error("Market sync cancelled");
 
-      const typeName = tradeTypeNamesForBase(base)[0];
       for (const item of work) {
         if (isCancelled()) throw new Error("Market sync cancelled");
         comboDone++;
@@ -1490,24 +1736,33 @@ export async function syncTabletMarketFromTrade(opts?: {
       emitPartial();
     }
 
-    // Phase 2 — per-base remainder wait (not oldest-global), then probe#2 + final blank.
+    // Phase 2 — remainder wait, then probe#2 for blank + magic + rare.
     for (const pending of pendingBuys) {
       if (isCancelled()) throw new Error("Market sync cancelled");
-      const { base, ctx, typeName, snap1, fetchedAt, entry } = pending;
-      // Only probe Instant Buyout refill. Whisper/fallback snaps skip #2.
-      const canFlowProbe =
-        flowProbeEnabled && snap1.status === "securable";
+      const {
+        base,
+        ctx,
+        typeName,
+        snap1,
+        magicSnap1,
+        rareSnap1,
+        fetchedAt,
+        entry,
+      } = pending;
+      const canFlowProbe = flowProbeEnabled && snap1?.status === "securable";
+      const trashFlow =
+        flowProbeEnabled &&
+        (magicSnap1?.status === "securable" ||
+          rareSnap1?.status === "securable");
 
       let regime: MarketFlowRegime = "unknown";
-      let priced = snap1.priced;
-      let status = snap1.status;
-      let mix = snap1.mix;
-      let sampleSize = snap1.sampleSize;
+      let priced = snap1?.priced ?? [];
+      let status = snap1?.status ?? "securable";
+      let mix = snap1?.mix ?? "";
+      let sampleSize = snap1?.sampleSize ?? 0;
       let actualGapMs: number | undefined;
 
-      if (canFlowProbe) {
-        // Per-base wait so each Instant Buyout pair spans ~flowProbeMs even when
-        // bases finished probe#1 at different times (avoids over-aging late bases).
+      if (canFlowProbe || trashFlow) {
         const waitMore = remainingFlowProbeWaitMs(
           fetchedAt,
           Date.now(),
@@ -1523,7 +1778,11 @@ export async function syncTabletMarketFromTrade(opts?: {
         }
         actualGapMs = Date.now() - fetchedAt;
         progress(`${ctx} Flow probe #2…`);
+      } else {
+        progress(`${ctx} commit…`);
+      }
 
+      if (canFlowProbe && snap1) {
         try {
           const snap2 = await searchBuyPriceEx(
             typeName,
@@ -1552,32 +1811,110 @@ export async function syncTabletMarketFromTrade(opts?: {
           console.warn(`[tablet-market] flow probe ${typeName}`, e);
           regime = "unknown";
         }
-      } else {
-        progress(`${ctx} commit…`);
       }
 
       const kEff = effectiveBuyCountForRegime(regime, buyCountB);
-      const price = commitBlankBuyPrice(
-        market,
-        base.id,
-        priced,
-        regime,
-        buyCountB,
-        stats,
+      const price =
+        priced.length > 0
+          ? commitBlankBuyPrice(
+              market,
+              base.id,
+              priced,
+              regime,
+              buyCountB,
+              stats,
+            )
+          : null;
+      if (priced.length) {
+        entry.searches.push(
+          buildSearchTrace({
+            kind: "buy-securable",
+            label: `${ctx} flow=${regime} mean@${kEff} · ${status}`,
+            typeName,
+            statusOption: status,
+            rows: [],
+            priced,
+            estimate: price,
+            estimateNote: `flow=${regime} · ${buyMeanEstimateNote(priced.length, buyCountB, regime)} · ${status}`,
+            floorEx: buyFloor,
+            ceilingEx: buyCeiling,
+          }),
+        );
+      }
+
+      const restampTrash = async (
+        snapA: TrashSnap | null,
+        buildBody: (
+          status: "securable" | "available",
+        ) => TabletTradeSearchBody,
+        kinds: {
+          sell: "sell-junk" | "sell-magic";
+          buy: "buy-junk" | "buy-magic";
+        },
+        buyField: "junkBuyByBase" | "magicBuyByBase",
+        sellField: "junkSellByBase" | "magicSellByBase",
+        comboKey: string,
+        label: string,
+      ) => {
+        if (!snapA) return;
+        let book = snapA;
+        if (flowProbeEnabled && snapA.status === "securable") {
+          const snapB = await searchTrashBookPreferMarket(
+            buildBody,
+            leagueId,
+            fx,
+            progress,
+            `${label} #2`,
+            typeName,
+            isCancelled,
+            buyFloor,
+            buyCeiling,
+            sellCeiling,
+            buyCountB,
+            includeAvailable,
+            kinds,
+            { forceStatus: "securable", regime: "unknown" },
+          );
+          entry.searches.push(snapB.buyTrace);
+          const bookRegime = classifyMarketFlow(
+            snapA.buyPriced,
+            snapB.buyPriced,
+          );
+          const k2 = effectiveBuyCountForRegime(bookRegime, buyCountB);
+          const buy2 = estimateBuyPriceMeanOfCheapestEx(snapB.buyPriced, k2);
+          book = { ...snapB, buy: buy2 ?? snapB.buy ?? snapA.buy };
+        }
+        comboDebug.push({
+          baseId: base.id,
+          baseName: base.name,
+          comboKey,
+          finalSell: book.sell,
+          search: book.sellTrace,
+        });
+        if (book.buy != null && isFinitePositive(book.buy)) {
+          stampMeasuredMap(market, buyField, base.id, book.buy);
+        }
+        if (book.sell != null && isFinitePositive(book.sell)) {
+          stampMeasuredMap(market, sellField, base.id, book.sell);
+        }
+      };
+      await restampTrash(
+        magicSnap1,
+        (s) => magicTabletQuery(typeName, s),
+        { sell: "sell-magic", buy: "buy-magic" },
+        "magicBuyByBase",
+        "magicSellByBase",
+        "__magic__",
+        `Magic: ${base.name}`,
       );
-      entry.searches.push(
-        buildSearchTrace({
-          kind: "buy-securable",
-          label: `${ctx} flow=${regime} mean@${kEff} · ${status}`,
-          typeName,
-          statusOption: status,
-          rows: [],
-          priced,
-          estimate: price,
-          estimateNote: `flow=${regime} · ${buyMeanEstimateNote(priced.length, buyCountB, regime)} · ${status}`,
-          floorEx: buyFloor,
-          ceilingEx: buyCeiling,
-        }),
+      await restampTrash(
+        rareSnap1,
+        (s) => junkTabletQuery(typeName, s),
+        { sell: "sell-junk", buy: "buy-junk" },
+        "junkBuyByBase",
+        "junkSellByBase",
+        "__junk__",
+        `Junk: ${base.name}`,
       );
 
       if (price != null && isFinitePositive(price)) {
@@ -1643,7 +1980,7 @@ export async function syncTabletMarketFromTrade(opts?: {
     scopeLabel ? `only:${scopeLabel}` : null,
     stats.currenciesPriced ? "ninja orbs" : null,
     stats.basesPriced
-      ? `${stats.basesPriced} bases(mean@hot${BUY_DEPTH_HOT}/B${buyCountB}/warm${BUY_DEPTH_N}${flowProbeEnabled ? "+flow" : ""},10u,${listingTag},p65)`
+      ? `${stats.basesPriced} bases(mean@hot${BUY_DEPTH_HOT}/B${buyCountB}/warm${BUY_DEPTH_N}${flowProbeEnabled ? "+flow" : ""},10u,any-currency,${listingTag},p65,+magic+rare-flow)`
       : null,
     stats.combosPriced
       ? `${stats.combosPriced} SAB-combos(sell,${listingTag},p65,noSB)`

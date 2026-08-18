@@ -35,6 +35,9 @@ function seededMarket() {
   market.basePrices.breach_tablet = 40;
   market.basePrices.temple_tablet = 55;
   market.junkSellByBase = { breach_tablet: 12, temple_tablet: 60 };
+  market.junkBuyByBase = { breach_tablet: 18, temple_tablet: 70 };
+  market.magicSellByBase = { breach_tablet: 22, temple_tablet: 75 };
+  market.magicBuyByBase = { breach_tablet: 28, temple_tablet: 80 };
   market.modValueMap = {
     [BREACH_DUO]: 200,
     [TEMPLE_DUO]: 900,
@@ -58,6 +61,18 @@ function seededMarket() {
       breach_tablet: "measured",
       temple_tablet: "measured",
     },
+    junkBuyByBase: {
+      breach_tablet: "measured",
+      temple_tablet: "measured",
+    },
+    magicSellByBase: {
+      breach_tablet: "measured",
+      temple_tablet: "measured",
+    },
+    magicBuyByBase: {
+      breach_tablet: "measured",
+      temple_tablet: "measured",
+    },
     modValueMap: {
       [BREACH_DUO]: "measured",
       [TEMPLE_DUO]: "measured",
@@ -76,6 +91,8 @@ describe("cloneMarketCache", () => {
     clone.basePrices.breach_tablet = 99;
     clone.modValueMap[BREACH_DUO] = 1;
     clone.junkSellByBase!.breach_tablet = 1;
+    clone.junkBuyByBase!.breach_tablet = 1;
+    clone.magicBuyByBase!.breach_tablet = 1;
     clone.measuredAffixSamples![0]!.sellEx = 1;
     clone.measuredAffixSamples![0]!.modIds.push("extra");
     clone.modRollCurves![
@@ -86,6 +103,8 @@ describe("cloneMarketCache", () => {
     expect(src.basePrices.breach_tablet).toBe(40);
     expect(src.modValueMap[BREACH_DUO]).toBe(200);
     expect(src.junkSellByBase!.breach_tablet).toBe(12);
+    expect(src.junkBuyByBase!.breach_tablet).toBe(18);
+    expect(src.magicBuyByBase!.breach_tablet).toBe(28);
     expect(src.measuredAffixSamples![0]!.sellEx).toBe(180);
     expect(src.measuredAffixSamples![0]!.modIds).toEqual([
       "breach_unstable_rare_t1",
@@ -105,8 +124,11 @@ describe("clearBaseBuySlice / clearBaseSellSlice", () => {
     clearBaseBuySlice(market, "breach_tablet");
 
     expect(Number.isNaN(market.basePrices.breach_tablet)).toBe(true);
+    expect(market.junkBuyByBase!.breach_tablet).toBeUndefined();
+    expect(market.magicBuyByBase!.breach_tablet).toBeUndefined();
     expect(market.basePrices.temple_tablet).toBe(55);
     expect(market.junkSellByBase!.breach_tablet).toBe(12);
+    expect(market.junkBuyByBase!.temple_tablet).toBe(70);
     expect(market.modValueMap[BREACH_DUO]).toBe(200);
     expect(market.modValueMap[BREACH_SOLO]).toBe(180);
     expect(market.modValueMap[BREACH_TRIPLE]).toBe(250);
@@ -118,6 +140,9 @@ describe("clearBaseBuySlice / clearBaseSellSlice", () => {
 
     expect(market.basePrices.breach_tablet).toBe(40);
     expect(market.junkSellByBase!.breach_tablet).toBeUndefined();
+    expect(market.magicSellByBase!.breach_tablet).toBeUndefined();
+    expect(market.junkBuyByBase!.breach_tablet).toBe(18);
+    expect(market.magicBuyByBase!.breach_tablet).toBe(28);
     expect(market.junkSellByBase!.temple_tablet).toBe(60);
     expect(market.modValueMap[BREACH_DUO]).toBeUndefined();
     expect(market.modValueMap[BREACH_SOLO]).toBeUndefined();

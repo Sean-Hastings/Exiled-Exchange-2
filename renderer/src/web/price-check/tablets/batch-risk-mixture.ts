@@ -169,8 +169,13 @@ export async function computeMixtureRisk(
   } = input;
 
   if (policy.blank === "Skip-Blanks") return null;
-  const baseCost = market.basePrices[baseId];
-  if (!Number.isFinite(baseCost)) return null;
+  const entryOk =
+    policy.blank === "Buy-Magic"
+      ? Number.isFinite(market.magicBuyByBase?.[baseId])
+      : policy.blank === "Buy-Rare"
+        ? Number.isFinite(market.junkBuyByBase?.[baseId])
+        : Number.isFinite(market.basePrices[baseId]);
+  if (!entryOk) return null;
 
   const D =
     fixedDrawOverrides?.length ??

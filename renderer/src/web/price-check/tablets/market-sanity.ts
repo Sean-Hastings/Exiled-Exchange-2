@@ -17,6 +17,9 @@ export type PriceSource =
 
 export interface MarketPriceSource {
   junkSellByBase?: Record<string, PriceSource>;
+  junkBuyByBase?: Record<string, PriceSource>;
+  magicSellByBase?: Record<string, PriceSource>;
+  magicBuyByBase?: Record<string, PriceSource>;
   modValueMap?: Record<string, PriceSource>;
 }
 

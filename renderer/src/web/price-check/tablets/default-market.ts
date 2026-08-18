@@ -28,6 +28,9 @@ export function createEmptyMarketCache(): MarketPriceCache {
     modValueMap: {},
     modPremiums: {},
     junkSellByBase: {},
+    junkBuyByBase: {},
+    magicSellByBase: {},
+    magicBuyByBase: {},
     listingAnchors: {
       tradeDivine: NAN,
       merchantHigh: NAN,

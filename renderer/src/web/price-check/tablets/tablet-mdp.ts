@@ -878,10 +878,7 @@ function priceTierSourcesFromMeasured(
   if (has("Trash")) {
     trash = own("Trash");
   } else if (dumpOk) {
-    trash =
-      dumpSource === "fraction-of-base" || dumpSource === "manual-survey"
-        ? dumpSource
-        : "cascaded";
+    trash = dumpSource; // measured | manual-survey | fraction-of-base
   } else {
     trash = "measured";
   }
@@ -960,6 +957,10 @@ export function buildTierSaleTable(
     (tier, _prob, sale, source) => {
       // B is junk filler — do not seed a mid-band; dump via Trash cascade.
       if (tier === "B") return;
+      // Trash sale is always the dump floor from the live trash-book
+      // (`junkSellByBase`), never combo samples (keys are global and Temple
+      // survey leaked across bases).
+      if (tier === "Trash") return;
       measuredSales[tier].push(sale);
       measuredSaleSources[tier].push(source);
     },
@@ -972,7 +973,7 @@ export function buildTierSaleTable(
     if (!Number.isFinite(sample.sellEx) || sample.sellEx <= 0) continue;
     if (!sample.modIds?.length) continue;
     const tier = modsToRareTier(sample.modIds, baseId);
-    if (tier === "B") continue;
+    if (tier === "B" || tier === "Trash") continue;
     measuredSales[tier].push(sample.sellEx);
     measuredSaleSources[tier].push("measured");
   }

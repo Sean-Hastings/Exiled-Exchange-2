@@ -106,7 +106,7 @@ describe("estimateTabletSellPrice", () => {
     expect(est.priceSource).toBe("manual-survey");
   });
 
-  it("marks survey-stamped combo asks as manual-survey", () => {
+  it("Trash hover uses dump floor, not leaked survey combo keys", () => {
     const stamped: ParsedTabletItem = {
       isTablet: true,
       tabletBaseKey: "temple_tablet",
@@ -130,9 +130,33 @@ describe("estimateTabletSellPrice", () => {
         },
       ],
     };
-    const est = estimateTabletSellPrice(stamped, templeMarket());
-    expect(est.basis).toBe("measured-combo");
-    expect(est.sellEx).toBe(60);
-    expect(est.priceSource).toBe("manual-survey");
+    const surveyOnly = estimateTabletSellPrice(stamped, templeMarket());
+    expect(surveyOnly.rareTier).toBe("Trash");
+    expect(surveyOnly.basis).toBe("tier-ask");
+    expect(surveyOnly.sellEx).toBe(60);
+    expect(surveyOnly.priceSource).toBe("manual-survey");
+
+    const live = templeMarket();
+    live.junkSellByBase = { ...live.junkSellByBase, temple_tablet: 42 };
+    live.priceSource = {
+      ...live.priceSource,
+      junkSellByBase: {
+        ...live.priceSource?.junkSellByBase,
+        temple_tablet: "measured",
+      },
+      // Leftover persisted survey dump pairs must not win over live dump
+      modValueMap: {
+        ...live.priceSource?.modValueMap,
+        "junk_gold_t1+junk_extra_strongbox_t1": "manual-survey",
+      },
+    };
+    live.modValueMap = {
+      ...live.modValueMap,
+      "junk_gold_t1+junk_extra_strongbox_t1": 60,
+    };
+    const est = estimateTabletSellPrice(stamped, live);
+    expect(est.basis).toBe("tier-ask");
+    expect(est.sellEx).toBe(42);
+    expect(est.priceSource).toBe("measured");
   });
 });

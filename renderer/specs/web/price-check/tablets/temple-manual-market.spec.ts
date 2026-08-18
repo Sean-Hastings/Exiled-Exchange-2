@@ -76,8 +76,17 @@ describe("temple manual survey market", () => {
       market.priceSource?.modValueMap?.["map_pack_size_t2+map_rarity_t1"],
     ).toBe("manual-survey");
     expect(
+      market.modValueMap["junk_gold_t1+junk_extra_strongbox_t1"],
+    ).toBeUndefined();
+    expect(
+      market.modValueMap["junk_xp_t1+junk_extra_shrine_t1"],
+    ).toBeUndefined();
+    expect(
       market.priceSource?.modValueMap?.["junk_gold_t1+junk_extra_strongbox_t1"],
-    ).toBe("manual-survey");
+    ).toBeUndefined();
+    expect(
+      market.priceSource?.modValueMap?.["junk_xp_t1+junk_extra_shrine_t1"],
+    ).toBeUndefined();
     const crystalKey = Object.keys(market.modValueMap).find((k) =>
       k.endsWith("+temple_crystal_t1"),
     );
@@ -113,14 +122,60 @@ describe("temple manual survey market", () => {
     expect(
       market.priceSource?.modValueMap?.["map_pack_size_t2+map_rarity_t1"],
     ).toBe("measured");
-    // Unmeasured survey keys still seed
+    // Shared dump junk+junk pairs are never seeded (not base-scoped)
     expect(
       market.modValueMap["junk_gold_t1+junk_extra_strongbox_t1"],
-    ).toBe(60);
+    ).toBeUndefined();
     expect(
       market.priceSource?.modValueMap?.[
         "junk_gold_t1+junk_extra_strongbox_t1"
       ],
-    ).toBe("manual-survey");
+    ).toBeUndefined();
+  });
+
+  it("deletes leftover shared dump combo keys on apply", () => {
+    const prior = createEmptyMarketCache();
+    prior.modValueMap = {
+      "junk_xp_t1+junk_extra_shrine_t1": 60,
+      "junk_gold_t1+junk_extra_strongbox_t1": 60,
+    };
+    prior.priceSource = {
+      modValueMap: {
+        "junk_xp_t1+junk_extra_shrine_t1": "manual-survey",
+        "junk_gold_t1+junk_extra_strongbox_t1": "manual-survey",
+      },
+    };
+    const market = applyTempleManualSurveyMarket(prior);
+    expect(market.modValueMap["junk_xp_t1+junk_extra_shrine_t1"]).toBeUndefined();
+    expect(
+      market.modValueMap["junk_gold_t1+junk_extra_strongbox_t1"],
+    ).toBeUndefined();
+    expect(
+      market.priceSource?.modValueMap?.["junk_xp_t1+junk_extra_shrine_t1"],
+    ).toBeUndefined();
+    expect(
+      market.priceSource?.modValueMap?.["junk_gold_t1+junk_extra_strongbox_t1"],
+    ).toBeUndefined();
+  });
+
+  it("live Temple dump beats leftover survey combo keys", () => {
+    const prior = createEmptyMarketCache();
+    prior.junkSellByBase = { temple_tablet: 42 };
+    prior.priceSource = {
+      junkSellByBase: { temple_tablet: "measured" },
+    };
+    prior.modValueMap = {
+      "junk_xp_t1+junk_extra_shrine_t1": 60,
+      "junk_gold_t1+junk_extra_strongbox_t1": 60,
+    };
+    prior.priceSource.modValueMap = {
+      "junk_xp_t1+junk_extra_shrine_t1": "manual-survey",
+      "junk_gold_t1+junk_extra_strongbox_t1": "manual-survey",
+    };
+    const market = applyTempleManualSurveyMarket(prior);
+    const sales = buildTierSaleTable(market, "temple_tablet")!;
+    expect(sales.uncorrupted.Trash).toBe(42);
+    expect(sales.uncorruptedSource.Trash).toBe("measured");
+    expect(sales.dumpFloorSource).toBe("measured");
   });
 });

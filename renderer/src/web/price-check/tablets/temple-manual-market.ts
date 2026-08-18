@@ -111,16 +111,17 @@ export function applyTempleManualSurveyMarket(
     "manual-survey",
   );
   stampIfEmpty(`junk_gold_t1+map_rarity_t1`, midBandEx, "manual-survey");
-  stampIfEmpty(
-    `junk_xp_t1+junk_extra_shrine_t1`,
-    dumpEx,
-    "manual-survey",
-  );
-  stampIfEmpty(
-    `junk_gold_t1+junk_extra_strongbox_t1`,
-    dumpEx,
-    "manual-survey",
-  );
+
+  // Shared generic affixes — combo keys are not base-scoped, so dump
+  // junk+junk pairs must never land in modValueMap (they leak Trash onto
+  // every tablet). Drop persisted leftovers; dump lives in junkSellByBase.
+  for (const key of [
+    "junk_xp_t1+junk_extra_shrine_t1",
+    "junk_gold_t1+junk_extra_strongbox_t1",
+  ] as const) {
+    delete modValueMap[key];
+    delete modValueSources[key];
+  }
 
   const junkSellByBase = { ...market.junkSellByBase };
   const junkSources: Record<string, PriceSource> = {

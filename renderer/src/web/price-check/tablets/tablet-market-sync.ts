@@ -1882,7 +1882,11 @@ export async function syncTabletMarketFromTrade(opts?: {
           );
           const k2 = effectiveBuyCountForRegime(bookRegime, buyCountB);
           const buy2 = estimateBuyPriceMeanOfCheapestEx(snapB.buyPriced, k2);
-          book = { ...snapB, buy: buy2 ?? snapB.buy ?? snapA.buy };
+          book = {
+            ...snapB,
+            buy: buy2 ?? snapB.buy ?? snapA.buy,
+            sell: snapB.sell ?? snapA.sell,
+          };
         }
         comboDebug.push({
           baseId: base.id,

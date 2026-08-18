@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createEmptyMarketCache } from "@/web/price-check/tablets/default-market";
 import { TABLET_BASES } from "@/web/price-check/tablets/mod-weights";
 import type { MarketPriceCache } from "@/web/price-check/tablets/tablet-ev-calculator";
+import { applyTempleManualSurveyMarket } from "@/web/price-check/tablets/temple-manual-market";
 import {
   buildChaosOneAffixTransitions,
   buildTierSaleTable,
@@ -174,7 +175,7 @@ describe("tablet-mdp", () => {
     expect(sales.dumpFloorSource).toBe("measured");
     expect(sales.uncorruptedSource.A).toBe("measured");
     expect(sales.uncorruptedSource.S).toBe("cascaded");
-    expect(sales.uncorruptedSource.Trash).toBe("cascaded");
+    expect(sales.uncorruptedSource.Trash).toBe("measured");
   });
 
   it("junk-heavy 2p+2s pool makes Trash the modal alch outcome", () => {
@@ -195,7 +196,7 @@ describe("tablet-mdp", () => {
     expect(sales.uncorrupted.A).toBe(33);
     expect(sales.uncorrupted.B).toBe(33);
     expect(sales.dumpFloorSource).toBe("measured");
-    expect(sales.uncorruptedSource.Trash).toBe("cascaded");
+    expect(sales.uncorruptedSource.Trash).toBe("measured");
     expect(sales.uncorruptedSource.S).toBe("cascaded");
   });
 
@@ -313,6 +314,9 @@ describe("tablet-mdp", () => {
 
   it("Magic-Pipeline beats Buy-Magic when trash blues cost about blank+T+A", () => {
     const market = measuredFixture();
+    // Trash is the live dump floor (~25), not leaked global combo asks.
+    // Cheap blanks keep craft +EV so Skip does not mask the comparison.
+    market.basePrices.breach_tablet = 12;
     const fromBlank = solvePolicy(
       market,
       "breach_tablet",
@@ -323,6 +327,41 @@ describe("tablet-mdp", () => {
     };
     const rec = recommendPolicy(market, "breach_tablet");
     expect(rec!.policy.blank).toBe("Magic-Pipeline");
+  });
+
+  it("live junkSellByBase dump is per-base even after Temple survey combos", () => {
+    const market = applyTempleManualSurveyMarket(createEmptyMarketCache());
+    market.fx = { exaltPerChaos: 45, exaltPerDivine: 350 };
+    market.currencyCosts.chaos = 45;
+    market.currencyCosts.alchemy = 0.05;
+    // Leftover global survey dump keys must not set Trash on other bases
+    market.modValueMap["junk_xp_t1+junk_extra_shrine_t1"] = 60;
+    market.modValueMap["junk_gold_t1+junk_extra_strongbox_t1"] = 60;
+    market.priceSource = {
+      ...market.priceSource,
+      modValueMap: {
+        ...market.priceSource?.modValueMap,
+        "junk_xp_t1+junk_extra_shrine_t1": "manual-survey",
+        "junk_gold_t1+junk_extra_strongbox_t1": "manual-survey",
+      },
+      junkSellByBase: {
+        ...market.priceSource?.junkSellByBase,
+        breach_tablet: "measured",
+        temple_tablet: "measured",
+      },
+    };
+    market.junkSellByBase = {
+      ...market.junkSellByBase,
+      breach_tablet: 22,
+      temple_tablet: 18,
+    };
+
+    const breach = buildTierSaleTable(market, "breach_tablet")!;
+    expect(breach.uncorrupted.Trash).toBe(22);
+    expect(breach.uncorruptedSource.Trash).toBe("measured");
+    const temple = buildTierSaleTable(market, "temple_tablet")!;
+    expect(temple.uncorrupted.Trash).toBe(18);
+    expect(temple.uncorruptedSource.Trash).toBe("measured");
   });
 
   it("Buy-Rare uses Trash continuation minus junk buy", () => {

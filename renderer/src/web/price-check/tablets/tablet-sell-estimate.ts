@@ -116,15 +116,19 @@ export function estimateTabletSellPrice(
     }
   }
 
-  const combo = measuredComboAsk(market, parsed.parsedMods);
-  if (Number.isFinite(combo.value)) {
-    return {
-      sellEx: combo.value,
-      rareTier,
-      basis: "measured-combo",
-      detail: `tier ${rareTier} measured combo`,
-      priceSource: combo.source,
-    };
+  // Trash/B sale is the dump floor (`junkSellByBase`). Combo keys are global
+  // and Temple survey junk+junk pairs used to leak across every base.
+  if (rareTier !== "Trash" && rareTier !== "B") {
+    const combo = measuredComboAsk(market, parsed.parsedMods);
+    if (Number.isFinite(combo.value)) {
+      return {
+        sellEx: combo.value,
+        rareTier,
+        basis: "measured-combo",
+        detail: `tier ${rareTier} measured combo`,
+        priceSource: combo.source,
+      };
+    }
   }
 
   if (Number.isFinite(tierAsk)) {

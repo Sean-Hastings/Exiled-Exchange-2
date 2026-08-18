@@ -1,51 +1,224 @@
 {
   "revision": 1,
-  "updatedAt": 1786671071813,
+  "updatedAt": 1787026758674,
   "batches": [
     {
       "id": "temple-alch-2026-08-12",
       "baseId": "temple_tablet",
       "createdAt": 1786492800000,
       "updatedAt": 1786671071813,
-      "note": "Imported from manual_review_1.json craftSample (2026-08-12). Alchemy rare n=27; affixesPerTablet=4 (2p+2s). item_rarity mapped to junk_item_rarity_t1; item_quantity omitted (map_quantity_* not in temple pools).",
       "affixesPerTablet": 4,
       "tablets": 27,
       "hits": [
-        { "modId": "temple_crystal_t1", "hits": 4 },
-        { "modId": "temple_beacon_pack_t1", "hits": 15 },
-        { "modId": "temple_chest_rare_t1", "hits": 7 },
-        { "modId": "map_pack_size_t2", "hits": 11 },
-        { "modId": "junk_monster_eff_t1", "hits": 8 },
-        { "modId": "junk_item_rarity_t1", "hits": 12 }
-      ]
+        {
+          "modId": "temple_crystal_t1",
+          "hits": 4
+        },
+        {
+          "modId": "temple_beacon_pack_t1",
+          "hits": 15
+        },
+        {
+          "modId": "temple_chest_rare_t1",
+          "hits": 7
+        },
+        {
+          "modId": "map_pack_size_t2",
+          "hits": 11
+        },
+        {
+          "modId": "junk_monster_eff_t1",
+          "hits": 8
+        },
+        {
+          "modId": "junk_item_rarity_t1",
+          "hits": 12
+        }
+      ],
+      "note": "Imported from manual_review_1.json craftSample (2026-08-12). Alchemy rare n=27; affixesPerTablet=4 (2p+2s). item_rarity mapped to junk_item_rarity_t1; item_quantity omitted (map_quantity_* not in temple pools)."
     },
     {
       "id": "temple-magic-ta-2026-08-12",
       "baseId": "temple_tablet",
       "createdAt": 1786492800000,
       "updatedAt": 1786671071813,
-      "note": "Imported from manual_review_1.json craftSample (2026-08-12). Magic/T+A n=28; affixesPerTablet=2. item_rarity mapped to junk_item_rarity_t1; item_quantity omitted (map_quantity_* not in temple pools).",
       "affixesPerTablet": 2,
       "tablets": 28,
       "hits": [
-        { "modId": "temple_crystal_t1", "hits": 1 },
-        { "modId": "temple_beacon_pack_t1", "hits": 8 },
-        { "modId": "temple_chest_rare_t1", "hits": 3 },
-        { "modId": "map_pack_size_t2", "hits": 5 },
-        { "modId": "junk_monster_eff_t1", "hits": 6 },
-        { "modId": "junk_item_rarity_t1", "hits": 3 }
-      ]
+        {
+          "modId": "temple_crystal_t1",
+          "hits": 1
+        },
+        {
+          "modId": "temple_beacon_pack_t1",
+          "hits": 8
+        },
+        {
+          "modId": "temple_chest_rare_t1",
+          "hits": 3
+        },
+        {
+          "modId": "map_pack_size_t2",
+          "hits": 5
+        },
+        {
+          "modId": "junk_monster_eff_t1",
+          "hits": 6
+        },
+        {
+          "modId": "junk_item_rarity_t1",
+          "hits": 3
+        }
+      ],
+      "note": "Imported from manual_review_1.json craftSample (2026-08-12). Magic/T+A n=28; affixesPerTablet=2. item_rarity mapped to junk_item_rarity_t1; item_quantity omitted (map_quantity_* not in temple pools)."
     },
     {
       "id": "temple-chaos-oneaffix-2026-08-12",
       "baseId": "temple_tablet",
       "createdAt": 1786492800000,
       "updatedAt": 1786671071813,
-      "note": "Imported from manual_review_1.json craftSample/chaosSlamSample (2026-08-12). One-affix chaos; n≈32.5 (~30–35) stored as tablets=33, affixesPerTablet=1. No explicit side budgets — default 50/50 prefix/suffix like alch/magic batches (chaos picks a random slot).",
       "affixesPerTablet": 1,
       "tablets": 33,
       "hits": [
-        { "modId": "temple_crystal_t1", "hits": 1 }
+        {
+          "modId": "temple_crystal_t1",
+          "hits": 1
+        }
+      ],
+      "note": "Imported from manual_review_1.json craftSample/chaosSlamSample (2026-08-12). One-affix chaos; n≈32.5 (~30–35) stored as tablets=33, affixesPerTablet=1. No explicit side budgets — default 50/50 prefix/suffix like alch/magic batches (chaos picks a random slot)."
+    },
+    {
+      "id": "e30cfb70-b1cc-4826-a4ee-0968643de383",
+      "baseId": "ritual_tablet",
+      "createdAt": 1786925325360,
+      "updatedAt": 1786925325360,
+      "affixesPerTablet": 6,
+      "tablets": 15,
+      "hits": [
+        {
+          "modId": "ritual_tribute_t1",
+          "hits": 5
+        },
+        {
+          "modId": "ritual_omen_t1",
+          "hits": 4
+        },
+        {
+          "modId": "ritual_reroll_cost_t1",
+          "hits": 5
+        },
+        {
+          "modId": "ritual_defer_cost_t1",
+          "hits": 2
+        },
+        {
+          "modId": "ritual_defer_t1",
+          "hits": 1
+        },
+        {
+          "modId": "ritual_revived_rare_t1",
+          "hits": 1
+        },
+        {
+          "modId": "ritual_free_reroll_t1",
+          "hits": 3
+        }
+      ]
+    },
+    {
+      "id": "c4f12d44-c284-4d49-88c9-6b54c73526ac",
+      "baseId": "ritual_tablet",
+      "createdAt": 1787012812379,
+      "updatedAt": 1787012812379,
+      "affixesPerTablet": 2,
+      "tablets": 5,
+      "hits": [
+        {
+          "modId": "ritual_tribute_t1",
+          "hits": 1
+        },
+        {
+          "modId": "ritual_omen_t1",
+          "hits": 1
+        }
+      ]
+    },
+    {
+      "id": "5b223e16-2c71-4ce3-9f2a-e4a34af8ed68",
+      "baseId": "ritual_tablet",
+      "createdAt": 1787013982408,
+      "updatedAt": 1787013982408,
+      "affixesPerTablet": 4,
+      "tablets": 18,
+      "hits": [
+        {
+          "modId": "ritual_tribute_t1",
+          "hits": 8
+        },
+        {
+          "modId": "ritual_reroll_t1",
+          "hits": 0
+        },
+        {
+          "modId": "ritual_omen_t1",
+          "hits": 2
+        }
+      ]
+    },
+    {
+      "id": "220ae4df-a205-48a5-a28f-aa6912015143",
+      "baseId": "irradiated_tablet",
+      "createdAt": 1787018681861,
+      "updatedAt": 1787018681861,
+      "affixesPerTablet": 1,
+      "tablets": 17,
+      "hits": [
+        {
+          "modId": "junk_map_mods_t1",
+          "hits": 0
+        }
+      ]
+    },
+    {
+      "id": "946edd69-433c-490b-b45e-f5180aee6af0",
+      "baseId": "ritual_tablet",
+      "createdAt": 1787026507092,
+      "updatedAt": 1787026507092,
+      "affixesPerTablet": 4,
+      "tablets": 10,
+      "hits": [
+        {
+          "modId": "ritual_omen_t1",
+          "hits": 1
+        }
+      ]
+    },
+    {
+      "id": "2b4ffe95-e2d1-47fe-a471-fc4764ff5613",
+      "baseId": "irradiated_tablet",
+      "createdAt": 1787026734710,
+      "updatedAt": 1787026734710,
+      "affixesPerTablet": 4,
+      "tablets": 6,
+      "hits": [
+        {
+          "modId": "junk_map_mods_t1",
+          "hits": 0
+        }
+      ]
+    },
+    {
+      "id": "763af4a4-0c69-46ba-8948-5b1c1b30d06c",
+      "baseId": "ritual_tablet",
+      "createdAt": 1787026758674,
+      "updatedAt": 1787026758674,
+      "affixesPerTablet": 4,
+      "tablets": 10,
+      "hits": [
+        {
+          "modId": "ritual_reroll_t1",
+          "hits": 0
+        }
       ]
     }
   ]

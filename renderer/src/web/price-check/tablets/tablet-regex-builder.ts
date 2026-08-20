@@ -165,7 +165,7 @@ function regexForModIds(ids: string[]): string {
  * Apply in order S → A. Anything that matches none → Trash/dump.
  *
  * Stash cannot score multi-affix combos, so:
- *   S-quality hit → MDP rare A (solo S); SS/SA → MDP S
+ *   S-quality hit → MDP rare **S** (solo S); SS/SA need parser
  *   A-quality hit → dump now (solo A is MDP B, aliased to Trash)
  *   AA / A|A still MDP A but stash cannot see the pair
  */
@@ -186,8 +186,8 @@ export function buildRareTierJudgementRegexes(
       modIds: sMods,
       note:
         baseId === "temple_tablet"
-          ? "S-quality (Temple: crystal → MDP S)"
-          : "S-quality. Solo → MDP A; SS/SA → MDP S",
+          ? "S-quality (Temple: crystal → MDP SS)"
+          : "S-quality. Solo → MDP S; SS/SA → MDP SS",
     },
     {
       tier: "A",
@@ -195,7 +195,7 @@ export function buildRareTierJudgementRegexes(
       modIds: aMods,
       note: aMods.length
         ? "A-quality. Solo → dump (MDP B). AA / A|A → MDP A"
-        : "No A-quality mods — use S hits as MDP A",
+        : "No A-quality mods — use S hits as MDP S",
     },
   ];
 }

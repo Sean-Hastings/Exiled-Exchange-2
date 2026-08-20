@@ -47,6 +47,8 @@ export interface TabletMarketSyncOpts {
   flowProbe?: boolean;
   /** Include in-person / trade-site listings (`available` fallback). */
   includeAvailable?: boolean;
+  /** Standard capped worklist vs deep uncapped + solo-S roll prongs. */
+  syncMode?: "standard" | "deep";
 }
 
 function clampBuyB(n: number): number {
@@ -264,7 +266,9 @@ export async function ensureTabletMarketSynced(
     }
 
     const label = partial
-      ? `Syncing ${baseIds!.length} tablet type(s) (r${MARKET_SYNC_REVISION})…`
+      ? opts?.syncMode === "deep"
+        ? `Deep refresh ${baseIds!.length} tablet type(s) (r${MARKET_SYNC_REVISION})…`
+        : `Syncing ${baseIds!.length} tablet type(s) (r${MARKET_SYNC_REVISION})…`
       : `Syncing trade prices (r${MARKET_SYNC_REVISION})…`;
     tabletMarketStatus.value = {
       state: "loading",
@@ -284,6 +288,7 @@ export async function ensureTabletMarketSynced(
         flowProbe: opts?.flowProbe,
         includeAvailable:
           opts?.includeAvailable ?? tabletIncludeWhisper.value,
+        syncMode: opts?.syncMode,
         isCancelled: () => gen !== syncGeneration,
         onProgress: (detail) => {
           if (gen !== syncGeneration) return;
@@ -366,6 +371,13 @@ export async function ensureTabletMarketSynced(
   })();
 
   return inflight;
+}
+
+/** Deep roll-curve refresh for one tablet base (uncapped SAB + solo-S prongs). */
+export async function ensureTabletMarketDeepRefresh(
+  baseId: string,
+): Promise<void> {
+  return ensureTabletMarketSynced(true, { baseIds: [baseId], syncMode: "deep" });
 }
 
 const SURVEY_STORAGE_KEY = "ee2-tablet-tier-survey-breach";

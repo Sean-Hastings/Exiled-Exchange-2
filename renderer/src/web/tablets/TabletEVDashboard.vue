@@ -44,11 +44,30 @@
           @click="refreshSelected"
         >
           {{
-            isRefreshing && refreshScope
+            isRefreshing && refreshScope && !refreshScope.startsWith('Deep ·')
               ? `Refreshing ${refreshScope}…`
               : selectedRow
                 ? `Refresh ${shortBaseName(selectedRow.baseName)}`
                 : "Refresh Selected"
+          }}
+        </button>
+        <button
+          type="button"
+          class="btn text-xs"
+          :disabled="isRefreshing || !selectedRow"
+          :title="
+            selectedRow
+              ? `Deep roll-curve refresh for ${selectedRow.baseName} (solo-S lo/mid/hi prongs)`
+              : 'Select a tablet row first'
+          "
+          @click="deepRefreshSelected"
+        >
+          {{
+            isRefreshing && refreshScope?.startsWith('Deep ·')
+              ? `Deep refreshing ${refreshScope.slice(7)}…`
+              : selectedRow
+                ? `Deep Refresh ${shortBaseName(selectedRow.baseName)}`
+                : "Deep Refresh"
           }}
         </button>
         <label
@@ -321,7 +340,7 @@
           </div>
           <div class="overflow-auto min-h-0 p-2 space-y-3 text-gray-300">
             <div>
-              <div class="text-sky-200 mb-1">Alch roll → S / A / Trash</div>
+              <div class="text-sky-200 mb-1">Alch roll → SS / S / A / Trash</div>
               <table class="w-full text-left mb-2">
                 <thead class="text-gray-500">
                   <tr>
@@ -702,6 +721,7 @@ import { Host, MainProcess } from "@/web/background/IPC";
 import type { WidgetManager } from "../overlay/interfaces";
 import {
   BLANK_STRATEGY_LABELS,
+  ensureTabletMarketDeepRefresh,
   ensureTabletMarketSynced,
   getHighValueModsForBase,
   getWeightFitForBase,
@@ -951,6 +971,18 @@ async function refresh() {
   refreshScope.value = null;
   try {
     await ensureTabletMarketSynced(true);
+    recompute();
+  } finally {
+    refreshScope.value = null;
+  }
+}
+
+async function deepRefreshSelected() {
+  if (isRefreshing.value || !selectedId.value) return;
+  const name = selectedRow.value?.baseName ?? selectedId.value;
+  refreshScope.value = `Deep · ${shortBaseName(name)}`;
+  try {
+    await ensureTabletMarketDeepRefresh(selectedId.value);
     recompute();
   } finally {
     refreshScope.value = null;

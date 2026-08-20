@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { createEmptyMarketCache } from "@/web/price-check/tablets/default-market";
+import {
+  resetComboTierOverridesForTests,
+  setSessionComboTier,
+} from "@/web/price-check/tablets/combo-tier-overrides";
 import { TABLET_BASES } from "@/web/price-check/tablets/mod-weights";
 import type { MarketPriceCache } from "@/web/price-check/tablets/tablet-ev-calculator";
 import { applyTempleManualSurveyMarket } from "@/web/price-check/tablets/temple-manual-market";
@@ -10,6 +14,7 @@ import {
   defaultPolicy,
   expectedUnderDist,
   magicOnePOneSBranchProbs,
+  modsToRareTier,
   recommendPolicy,
   solveOptimalRarePolicy,
   solvePolicy,
@@ -60,10 +65,11 @@ describe("tablet-mdp", () => {
     const market = measuredFixture();
     const sales = buildTierSaleTable(market, "breach_tablet")!;
     sales.chaosFrom = {
-      S: { S: 1, A: 0, B: 0, Trash: 0 },
-      A: { S: 0, A: 1, B: 0, Trash: 0 },
-      B: { S: 0, A: 0, B: 1, Trash: 0 },
-      Trash: { S: 0, A: 0, B: 0, Trash: 1 },
+      SS: { SS: 1, S: 0, A: 0, B: 0, Trash: 0 },
+      S: { SS: 0, S: 1, A: 0, B: 0, Trash: 0 },
+      A: { SS: 0, S: 0, A: 1, B: 0, Trash: 0 },
+      B: { SS: 0, S: 0, A: 0, B: 1, Trash: 0 },
+      Trash: { SS: 0, S: 0, A: 0, B: 0, Trash: 1 },
     };
     const { rareV, note } = solveRareValues(sales, defaultPolicy());
     expect(note).toMatch(/Singular|−∞|Inf/i);
@@ -77,13 +83,14 @@ describe("tablet-mdp", () => {
     expect(rowSum).toBeCloseTo(1, 5);
     // Must not treat chaos as an independent full rare redraw
     const redrawL1 =
+      Math.abs(row.SS - sales.alchDist.SS) +
       Math.abs(row.S - sales.alchDist.S) +
       Math.abs(row.A - sales.alchDist.A) +
       Math.abs(row.B - sales.alchDist.B) +
       Math.abs(row.Trash - sales.alchDist.Trash);
     expect(redrawL1).toBeGreaterThan(0.05);
-    // One-slot replace: landing a single S mod is A-tier (solo S), not jackpot S
-    expect(row.S).toBeLessThanOrEqual(sales.alchDist.S + 1e-12);
+    // One-slot replace: landing a single S mod is S-tier (solo S), not jackpot SS
+    expect(row.SS).toBeLessThanOrEqual(sales.alchDist.SS + 1e-12);
   });
 
   it("optimal rare policy exposes marginal vs list (dump/sell = 0)", () => {
@@ -94,7 +101,7 @@ describe("tablet-mdp", () => {
     const opt = solveOptimalRarePolicy(sales);
     expect(opt.actionMarginals.Trash.List).toBeCloseTo(0, 5);
     // List is never worse than itself
-    for (const t of ["S", "A", "B", "Trash"] as const) {
+    for (const t of ["SS", "S", "A", "B", "Trash"] as const) {
       expect(opt.actionMarginals[t].List).toBeCloseTo(0, 5);
     }
     // Reroll-worthy iff best action ≠ List
@@ -117,6 +124,7 @@ describe("tablet-mdp", () => {
     const policy = defaultPolicy("Scour-Alch");
     const hit = solvePolicy(market, "breach_tablet", policy)!;
     const cont =
+      hit.sales.alchDist.SS * hit.rareV.SS +
       hit.sales.alchDist.S * hit.rareV.S +
       hit.sales.alchDist.A * hit.rareV.A +
       hit.sales.alchDist.B * hit.rareV.B +
@@ -131,18 +139,18 @@ describe("tablet-mdp", () => {
     const market = measuredFixture();
     market.junkSellByBase = { breach_tablet: 40 };
     market.modValueMap = {};
-    // Breach exclusives are suffix-only; 1p+1s with S-suffix is MDP A (solo S).
-    // Measure A at two prices — monotone / low-end uses min; S cascades from A.
+    // Breach exclusives are suffix-only; 1p+1s with S-suffix is MDP S (solo S).
+    // Measure S at two prices — monotone / low-end uses min; SS cascades from S.
     market.modValueMap[`junk_gold_t1+breach_unstable_rare_t1`] = 2000;
     market.modValueMap[`junk_xp_t1+breach_unstable_rare_t1`] = 9000;
 
     const sales = buildTierSaleTable(market, "breach_tablet")!;
     expect(sales.measuredFrac).toBeGreaterThan(0);
     expect(sales.measuredFrac).toBeLessThan(1);
-    // A measured min 2000; S unmeasured → cascade to A
-    expect(sales.uncorrupted.A).toBe(2000);
+    // S measured min 2000; SS unmeasured → cascade to S
     expect(sales.uncorrupted.S).toBe(2000);
-    expect(sales.uncorrupted.S).toBeGreaterThanOrEqual(sales.uncorrupted.A);
+    expect(sales.uncorrupted.SS).toBe(2000);
+    expect(sales.uncorrupted.SS).toBeGreaterThanOrEqual(sales.uncorrupted.S);
     expect(sales.uncorrupted.Trash).toBeLessThanOrEqual(sales.uncorrupted.B);
     expect(sales.uncorrupted.B).toBeLessThanOrEqual(sales.uncorrupted.A);
   });
@@ -151,30 +159,30 @@ describe("tablet-mdp", () => {
     const market = measuredFixture();
     market.junkSellByBase = { breach_tablet: 40 };
     market.modValueMap = {};
-    // Solo S (unstable) → A bucket; Domain splinters are Junk (not S/A)
+    // Solo S (unstable) → S bucket; Domain splinters are Junk (not S/A)
     market.modValueMap[`junk_monster_eff_t1+breach_unstable_rare_t1`] = 15000;
     market.modValueMap[`junk_item_rarity_t1+breach_hiveblood_t1`] = 12000;
     market.modValueMap[`junk_gold_t1+breach_unstable_rare_t1`] = 2500;
 
     const sales = buildTierSaleTable(market, "breach_tablet")!;
-    // A keys (solo S): 15000, 12000, 2500 → min 2500; S cascades
-    expect(sales.uncorrupted.A).toBe(2500);
+    // S keys (solo S): 15000, 12000, 2500 → min 2500; SS cascades
     expect(sales.uncorrupted.S).toBe(2500);
+    expect(sales.uncorrupted.SS).toBe(2500);
   });
 
   it("unmeasured better tier inherits worse measured (cascade), not dump crush", () => {
     const market = measuredFixture();
     market.junkSellByBase = { breach_tablet: 40 };
     market.modValueMap = {};
-    // Only A-bucket measured (solo S via unstable)
+    // Only S-bucket measured (solo S via unstable)
     market.modValueMap[`junk_gold_t1+breach_unstable_rare_t1`] = 5000;
     const sales = buildTierSaleTable(market, "breach_tablet")!;
-    expect(sales.uncorrupted.A).toBe(5000);
-    expect(sales.uncorrupted.S).toBe(5000); // inherit A, not dump
+    expect(sales.uncorrupted.S).toBe(5000);
+    expect(sales.uncorrupted.SS).toBe(5000); // inherit S, not dump
     expect(sales.uncorrupted.Trash).toBe(40);
     expect(sales.dumpFloorSource).toBe("measured");
-    expect(sales.uncorruptedSource.A).toBe("measured");
-    expect(sales.uncorruptedSource.S).toBe("cascaded");
+    expect(sales.uncorruptedSource.S).toBe("measured");
+    expect(sales.uncorruptedSource.SS).toBe("cascaded");
     expect(sales.uncorruptedSource.Trash).toBe("measured");
   });
 
@@ -192,12 +200,13 @@ describe("tablet-mdp", () => {
     market.junkSellByBase = { breach_tablet: 33 };
     const sales = buildTierSaleTable(market, "breach_tablet")!;
     expect(sales.measuredFrac).toBe(0);
+    expect(sales.uncorrupted.SS).toBe(33);
     expect(sales.uncorrupted.S).toBe(33);
     expect(sales.uncorrupted.A).toBe(33);
     expect(sales.uncorrupted.B).toBe(33);
     expect(sales.dumpFloorSource).toBe("measured");
     expect(sales.uncorruptedSource.Trash).toBe("measured");
-    expect(sales.uncorruptedSource.S).toBe("cascaded");
+    expect(sales.uncorruptedSource.SS).toBe("cascaded");
   });
 
   it("magic T+A uses separate prefix/suffix pools (not a combined draw)", () => {
@@ -228,6 +237,7 @@ describe("tablet-mdp", () => {
     expect(c.Trash.Trash).toBe(a.Trash.Trash);
     // Runtime override must change chaos transitions (fingerprint isolation)
     const l1 =
+      Math.abs(a.Trash.SS - b.Trash.SS) +
       Math.abs(a.Trash.S - b.Trash.S) +
       Math.abs(a.Trash.A - b.Trash.A) +
       Math.abs(a.Trash.B - b.Trash.B) +
@@ -373,5 +383,46 @@ describe("tablet-mdp", () => {
       defaultPolicy("Buy-Rare"),
     )!;
     expect(hit.whiteEV).toBeCloseTo(hit.rareV.Trash - 15, 5);
+  });
+
+  it("combo tier override re-buckets measured 1p1s sales", () => {
+    resetComboTierOverridesForTests();
+    const market = measuredFixture();
+    const modIds = ["junk_gold_t1", "breach_unstable_rare_t1"];
+    const key = "junk_gold_t1+breach_unstable_rare_t1";
+    expect(modsToRareTier(modIds, "breach_tablet")).toBe("S");
+    market.modValueMap[key] = 8000;
+
+    const before = buildTierSaleTable(market, "breach_tablet")!;
+    expect(before.uncorrupted.S).toBe(8000);
+
+    setSessionComboTier("breach_tablet", modIds, "A");
+    const after = buildTierSaleTable(market, "breach_tablet")!;
+    expect(modsToRareTier(modIds, "breach_tablet")).toBe("A");
+    expect(after.uncorrupted.A).toBe(8000);
+
+    resetComboTierOverridesForTests();
+  });
+
+  it("combo tier override shifts alchDist mass", () => {
+    resetComboTierOverridesForTests();
+    const market = measuredFixture();
+    const before = buildTierSaleTable(market, "breach_tablet")!;
+    const ssBefore = before.alchDist.SS;
+
+    const modIds = [
+      "junk_gold_t1",
+      "junk_xp_t1",
+      "breach_unstable_rare_t1",
+      "breach_hiveblood_t1",
+    ];
+    expect(modsToRareTier(modIds, "breach_tablet")).toBe("SS");
+    setSessionComboTier("breach_tablet", modIds, "Trash");
+
+    const after = buildTierSaleTable(market, "breach_tablet")!;
+    expect(after.alchDist.SS).toBeLessThan(ssBefore);
+    expect(after.alchDist.Trash).toBeGreaterThan(before.alchDist.Trash);
+
+    resetComboTierOverridesForTests();
   });
 });

@@ -6,6 +6,7 @@ import {
   hasExplicitTier,
   hasSessionModTier,
   modQualityTierForBase,
+  tierRank,
 } from "./mod-tiers";
 import type { ModQualityTier } from "./strat-types";
 import type { MarketPriceCache } from "./tablet-ev-calculator";
@@ -25,6 +26,23 @@ export interface TierUncertaintyRow {
   tier: ModQualityTier;
   score: number;
   reasons: TierUncertaintyReasons;
+  /** Session-set tier via uncertainty panel (hasSessionModTier). */
+  isMarked: boolean;
+}
+
+/** Sort: marked first (tier high→low), then unmarked (score high→low). */
+export function compareTierUncertaintyRows(
+  a: TierUncertaintyRow,
+  b: TierUncertaintyRow,
+): number {
+  if (a.isMarked !== b.isMarked) return a.isMarked ? -1 : 1;
+  if (a.isMarked) {
+    const tierDiff = tierRank(b.tier) - tierRank(a.tier);
+    if (tierDiff !== 0) return tierDiff;
+    return a.modId.localeCompare(b.modId);
+  }
+  if (b.score !== a.score) return b.score - a.score;
+  return a.modId.localeCompare(b.modId);
 }
 
 /**
@@ -147,15 +165,13 @@ export function rankTierUncertainty(
       tier: modQualityTierForBase(baseId, modId),
       score,
       reasons,
+      isMarked: hasSessionModTier(modId),
     });
   };
 
   for (const id of base.allowedPrefixPool) push(id, "prefix");
   for (const id of base.allowedSuffixPool) push(id, "suffix");
 
-  rows.sort((a, b) => {
-    if (b.score !== a.score) return b.score - a.score;
-    return a.modId.localeCompare(b.modId);
-  });
+  rows.sort(compareTierUncertaintyRows);
   return rows;
 }

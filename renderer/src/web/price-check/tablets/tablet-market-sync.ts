@@ -15,8 +15,11 @@ import { createEmptyMarketCache } from "./default-market";
 import { isFinitePositive } from "./market-sanity";
 import {
   applySabSyncHit,
+  buildSabDeepSyncWorklist,
   buildSabSyncWorklist,
+  finalizeDeepSoloSCurves,
 } from "./sab-combo-plan";
+import type { RollPriceAnchor } from "./mod-roll-price-curve";
 import {
   BUY_DEPTH_COLD_DEFAULT,
   BUY_DEPTH_HOT,
@@ -1323,9 +1326,15 @@ export async function syncTabletMarketFromTrade(opts?: {
    * Buyout (`securable`) is empty. Default off.
    */
   includeAvailable?: boolean;
+  /** Standard capped worklist vs deep uncapped + solo-S roll prongs. */
+  syncMode?: "standard" | "deep";
 }): Promise<MarketSyncResult> {
   const combosPerBase = opts?.combosPerBase ?? 40;
-  const progress = opts?.onProgress ?? (() => undefined);
+  const syncMode = opts?.syncMode ?? "standard";
+  const isDeep = syncMode === "deep";
+  const rawProgress = opts?.onProgress ?? (() => undefined);
+  const progress: ProgressFn =
+    isDeep ? (detail) => rawProgress(`Deep · ${detail}`) : rawProgress;
   const isCancelled = opts?.isCancelled ?? (() => false);
   const buyCountB = Math.max(
     5,
@@ -1681,11 +1690,14 @@ export async function syncTabletMarketFromTrade(opts?: {
     // Closed SAB sell worklist (S/A solos, SS/SA/AA duos, all-S 3/4; no SB)
     const plans = bases.map((base) => ({
       base,
-      work: buildSabSyncWorklist(base.id, combosPerBase),
+      work: isDeep
+        ? buildSabDeepSyncWorklist(base.id)
+        : buildSabSyncWorklist(base.id, combosPerBase),
     }));
     const comboTotal = plans.reduce((n, p) => n + p.work.length, 0);
     for (const { base, work } of plans) {
       clearBaseSellSlice(market, base.id);
+      const soloSAnchors = new Map<string, RollPriceAnchor[]>();
 
       const pending = pendingByBase.get(base.id);
       const typeName =
@@ -1729,9 +1741,14 @@ export async function syncTabletMarketFromTrade(opts?: {
         });
 
         if (price != null && isFinitePositive(price)) {
-          applySabSyncHit(market, base.id, item, price);
+          applySabSyncHit(market, base.id, item, price, {
+            soloSAnchors: isDeep ? soloSAnchors : undefined,
+          });
           stats.combosPriced++;
         }
+      }
+      if (isDeep && soloSAnchors.size) {
+        finalizeDeepSoloSCurves(market, base.id, soloSAnchors);
       }
       emitPartial();
     }
@@ -1987,7 +2004,7 @@ export async function syncTabletMarketFromTrade(opts?: {
       ? `${stats.basesPriced} bases(mean@hot${BUY_DEPTH_HOT}/B${buyCountB}/warm${BUY_DEPTH_N}${flowProbeEnabled ? "+flow" : ""},10u,any-currency,${listingTag},p65,+magic+rare-flow)`
       : null,
     stats.combosPriced
-      ? `${stats.combosPriced} SAB-combos(sell,${listingTag},p65,noSB)`
+      ? `${stats.combosPriced} SAB-combos(sell,${listingTag},p65${isDeep ? ",deep-prongs" : ""},noSB)`
       : null,
     `${exaltPerChaos.toFixed(0)}ex/c`,
     `${exaltPerDivine.toFixed(0)}ex/div`,

@@ -97,14 +97,14 @@ describe("sampleCraftPath / batch-law", () => {
     const sales = buildTierSaleTable(measuredFixture(), "breach_tablet")!;
     const policy: CraftPolicy = {
       blank: "Scour-Alch",
-      rare: { S: "List", A: "List", B: "List", Trash: "Reforge" },
-      corrupt: { S: "List", A: "List", B: "List", Trash: "Dump" },
+      rare: { SS: "List", S: "List", A: "List", B: "List", Trash: "Reforge" },
+      corrupt: { SS: "List", S: "List", A: "List", B: "List", Trash: "Dump" },
     };
     expect(policyUsesReforge(policy)).toBe(true);
     // Degenerate dist: always land on Trash
     const forced = {
       ...sales,
-      alchDist: { S: 0, A: 0, B: 0, Trash: 1 },
+      alchDist: { SS: 0, S: 0, A: 0, B: 0, Trash: 1 },
     };
     const { rareV } = solveRareValues(forced, policy);
     // rng=0.999: with S/A/B mass 0, first positive mass is Trash
@@ -187,8 +187,8 @@ describe("sampleCraftPath / batch-law", () => {
     const market = measuredFixture();
     const policy: CraftPolicy = {
       blank: "Scour-Alch",
-      rare: { S: "List", A: "List", B: "List", Trash: "List" },
-      corrupt: { S: "List", A: "List", B: "List", Trash: "Dump" },
+      rare: { SS: "List", S: "List", A: "List", B: "List", Trash: "List" },
+      corrupt: { SS: "List", S: "List", A: "List", B: "List", Trash: "Dump" },
     };
     const c5 = computeBatchLaw({
       baseId: "breach_tablet",

@@ -13,11 +13,13 @@ import {
   tabletWeightFingerprint,
   type ModWeightOpts,
 } from "./mod-weights";
+import { rareTierForCombo } from "./combo-tier-overrides";
 import {
-  SIDE_SCORE,
+  RARE_TIERS,
   classifyModCombo,
-  comboScoreToRareTier,
   modQualityTierForBase,
+  rareTierFromSidePatterns,
+  type RareTier,
   type SidePattern,
 } from "./mod-tiers";
 import type { ModQualityTier } from "./strat-types";
@@ -28,9 +30,8 @@ import type {
 import type { MarketPriceCache } from "./tablet-ev-calculator";
 import { dumpFloorInfo, type PriceSource } from "./market-sanity";
 
-export type RareTier = "S" | "A" | "B" | "Trash";
-
-export const RARE_TIERS: RareTier[] = ["S", "A", "B", "Trash"];
+export type { RareTier } from "./mod-tiers";
+export { RARE_TIERS } from "./mod-tiers";
 
 export type RareAction = "List" | "Chaos" | "Reforge" | "Vaal";
 /**
@@ -175,7 +176,7 @@ export function qRareAction(
 
 function defaultCorruptPolicy(): CraftPolicy["corrupt"] {
   // B is junk filler (priced = Trash); same dump action.
-  return { S: "List", A: "List", B: "Dump", Trash: "Dump" };
+  return { SS: "List", S: "List", A: "List", B: "Dump", Trash: "Dump" };
 }
 
 function emptyActionMarginals(): Record<RareAction, number> {
@@ -187,12 +188,13 @@ function measured(n: number | undefined | null): number {
 }
 
 function emptyDist(): Record<RareTier, number> {
-  return { S: 0, A: 0, B: 0, Trash: 0 };
+  return { SS: 0, S: 0, A: 0, B: 0, Trash: 0 };
 }
 
-/** Map mod-quality junk label → MDP Trash. */
+/** Map single-mod quality (chaos landing) → MDP rare bucket. */
 export function qualityToRareTier(q: ModQualityTier): RareTier {
-  if (q === "Junk") return "Trash";
+  if (q === "Junk" || q === "B") return "Trash";
+  if (q === "A") return "B";
   return q;
 }
 
@@ -202,6 +204,7 @@ export function qualityToRareTier(q: ModQualityTier): RareTier {
  * Pass baseId for Temple (and future) quality overlays.
  */
 export function modsToRareTier(modIds: string[], baseId?: string): RareTier {
+  if (baseId) return rareTierForCombo(modIds, baseId).tier;
   return classifyModCombo(modIds, baseId).rareTier;
 }
 
@@ -221,6 +224,7 @@ export function solveOptimalRarePolicy(sales: TierSaleTable): {
 } {
   const corrupt = defaultCorruptPolicy();
   let rare: CraftPolicy["rare"] = {
+    SS: "List",
     S: "List",
     A: "List",
     B: "List",
@@ -274,6 +278,7 @@ export function solveOptimalRarePolicy(sales: TierSaleTable): {
 
   const marginalVsList = emptyDist() as Record<RareTier, number>;
   const actionMarginals = {
+    SS: emptyActionMarginals(),
     S: emptyActionMarginals(),
     A: emptyActionMarginals(),
     B: emptyActionMarginals(),
@@ -314,6 +319,7 @@ export function defaultPolicy(blank: BlankCraftStrategy = "Magic-Pipeline"): Cra
   return {
     blank,
     rare: {
+      SS: "List",
       S: "List",
       A: "List",
       B: "Chaos",
@@ -337,7 +343,7 @@ export function candidatePolicies(): CraftPolicy[] {
     for (const trash of RARE_ACTIONS) {
       out.push({
         blank,
-        rare: { S: "List", A: "List", B: trash, Trash: trash },
+        rare: { SS: "List", S: "List", A: "List", B: trash, Trash: trash },
         corrupt: defaultCorruptPolicy(),
       });
     }
@@ -431,6 +437,7 @@ function accumulateRare2p2sDist(
 
 function emptyChaosFrom(): Record<RareTier, Record<RareTier, number>> {
   return {
+    SS: emptyDist(),
     S: emptyDist(),
     A: emptyDist(),
     B: emptyDist(),
@@ -476,21 +483,14 @@ function rareTierFromSides(
 ): RareTier {
   const p = sideFromQualities(prefQs[0]!, prefQs[1] ?? null);
   const s = sideFromQualities(sufQs[0]!, sufQs[1] ?? null);
-  let score = SIDE_SCORE[p] + SIDE_SCORE[s];
   const pS = prefQs.filter((q) => q === "S").length;
   const pA = prefQs.filter((q) => q === "A").length;
   const sS = sufQs.filter((q) => q === "S").length;
   const sA = sufQs.filter((q) => q === "A").length;
-  if (pS >= 1 && sS >= 1) score += 25;
-  else if ((pS >= 1 && sA >= 1) || (sS >= 1 && pA >= 1)) score += 20;
-  else if (pA >= 1 && sA >= 1) score += 20;
-  const tier = comboScoreToRareTier(score);
-  // Temple: after overlay the only S is crystal — any S quality → rareTier S.
-  if (
-    baseId === "temple_tablet" &&
-    (pS >= 1 || sS >= 1)
-  ) {
-    return "S";
+  let tier = rareTierFromSidePatterns(p, s, { pS, pA, sS, sA });
+  // Temple: crystal S quality → SS (match modComboToRareTier)
+  if (baseId === "temple_tablet" && (pS >= 1 || sS >= 1)) {
+    tier = "SS";
   }
   return tier;
 }
@@ -806,7 +806,7 @@ function measuredLowEnd(sales: number[]): number {
  * Rules:
  * 1. Measured tier → min(measured combo sells) (sell-floor / low-end)
  * 2. Unmeasured tier → inherit the next-worse priced tier (cascade up from dump)
- * 3. Pull-down monotone S≥A≥B≥Trash: when coverage ranks invert (S cheap, A hot),
+ * 3. Pull-down monotone SS≥S≥A≥B≥Trash: when coverage ranks invert,
  *    deflate the hotter lower tier (underest), never invent dump×N premiums
  */
 export function priceTiersFromMeasured(
@@ -814,6 +814,7 @@ export function priceTiersFromMeasured(
   dump: number,
 ): Record<RareTier, number> {
   const raw: Record<RareTier, number> = {
+    SS: measuredLowEnd(measuredSales.SS),
     S: measuredLowEnd(measuredSales.S),
     A: measuredLowEnd(measuredSales.A),
     B: measuredLowEnd(measuredSales.B),
@@ -832,13 +833,15 @@ export function priceTiersFromMeasured(
   out.B = Number.isFinite(raw.B) ? raw.B : out.Trash;
   out.A = Number.isFinite(raw.A) ? raw.A : out.B;
   out.S = Number.isFinite(raw.S) ? raw.S : out.A;
+  out.SS = Number.isFinite(raw.SS) ? raw.SS : out.S;
 
   // Monotone underest: never let a worse tier outprice a better one
+  if (Number.isFinite(out.SS) && out.S > out.SS) out.S = out.SS;
   if (Number.isFinite(out.S) && out.A > out.S) out.A = out.S;
   if (Number.isFinite(out.A) && out.B > out.A) out.B = out.A;
   if (Number.isFinite(out.B) && out.Trash > out.B) out.Trash = out.B;
 
-  // B is junk filler; priced tiers are S/A only. Always dump (= Trash).
+  // B is junk filler; priced tiers are SS/S/A only. Always dump (= Trash).
   out.B = out.Trash;
 
   return out;
@@ -894,9 +897,14 @@ function priceTierSourcesFromMeasured(
     : inherited
       ? "cascaded"
       : "measured";
+  const ss: PriceSource = has("SS")
+    ? own("SS")
+    : inherited
+      ? "cascaded"
+      : "measured";
 
   // B sale aliases Trash; source follows dump.
-  return { S: s, A: a, B: trash, Trash: trash };
+  return { SS: ss, S: s, A: a, B: trash, Trash: trash };
 }
 
 /**
@@ -939,12 +947,14 @@ export function buildTierSaleTable(
   const chaosFrom = buildChaosOneAffixTransitions(baseId, opts);
 
   const measuredSales: Record<RareTier, number[]> = {
+    SS: [],
     S: [],
     A: [],
     B: [],
     Trash: [],
   };
   const measuredSaleSources: Record<RareTier, PriceSource[]> = {
+    SS: [],
     S: [],
     A: [],
     B: [],
@@ -1012,15 +1022,17 @@ export function buildTierSaleTable(
     pMagicTrash = pTrash;
 
     const regalS: Record<RareTier, number> = {
-      S: 0.55,
-      A: 0.3,
+      SS: 0.35,
+      S: 0.3,
+      A: 0.15,
       B: 0.1,
-      Trash: 0.05,
+      Trash: 0.1,
     };
     const regalA: Record<RareTier, number> = {
+      SS: 0.05,
       S: 0.1,
       A: 0.45,
-      B: 0.3,
+      B: 0.25,
       Trash: 0.15,
     };
     for (const t of RARE_TIERS) {
@@ -1211,7 +1223,7 @@ export function entryDist(
   blank: BlankCraftStrategy,
 ): Record<RareTier, number> {
   if (blank === "Buy-Rare") {
-    return { S: 0, A: 0, B: 0, Trash: 1 };
+    return { SS: 0, S: 0, A: 0, B: 0, Trash: 1 };
   }
   // Bought cheapest magics are always trash → alch (no promising regal lottery).
   // Blank+T+A still uses magicDist: P(promising)×regal+ex + P(trash)×alch.
@@ -1261,6 +1273,7 @@ export function solvePolicy(
   const { rareV, corruptV, note } = solveRareValues(sales, policy);
 
   const actionMarginals = {
+    SS: emptyActionMarginals(),
     S: emptyActionMarginals(),
     A: emptyActionMarginals(),
     B: emptyActionMarginals(),

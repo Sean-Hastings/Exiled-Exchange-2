@@ -441,8 +441,8 @@ export class TabletEVEngine {
     for (const [action, label] of trashActions) {
       const policy: CraftPolicy = {
         blank: "Skip-Blanks",
-        rare: { S: "List", A: "List", B: "List", Trash: action },
-        corrupt: { S: "List", A: "List", B: "List", Trash: "Dump" },
+        rare: { SS: "List", S: "List", A: "List", B: "List", Trash: action },
+        corrupt: { SS: "List", S: "List", A: "List", B: "List", Trash: "Dump" },
       };
       const hit = solvePolicy(
         this.marketCache,
@@ -594,12 +594,12 @@ export class TabletEVEngine {
     const sales = alch?.sales;
     const measuredFrac = sales?.measuredFrac ?? 0;
     const tierKind = (tier: (typeof RARE_TIERS)[number]): OutcomeKind =>
-      tier === "S" ? "jackpot" : tier === "A" ? "hit" : "trash";
+      tier === "SS" ? "jackpot" : tier === "S" ? "hit" : "trash";
 
     const rollOutcomes: OutcomeSlice[] = sales
       ? (() => {
           const merged: Partial<
-            Record<"S" | "A" | "Trash", OutcomeSlice>
+            Record<"SS" | "S" | "A" | "Trash", OutcomeSlice>
           > = {};
           for (const tier of RARE_TIERS) {
             const display = tier === "B" ? "Trash" : tier;
@@ -614,7 +614,7 @@ export class TabletEVEngine {
                 prev.prob > 0 ? prev.revenueEx / prev.prob : prev.avgValueEx;
             } else {
               merged[display] = {
-                kind: tierKind(display),
+                kind: tierKind(tier),
                 label: display + " rare",
                 prob,
                 avgValueEx,
@@ -626,7 +626,7 @@ export class TabletEVEngine {
               };
             }
           }
-          return (["S", "A", "Trash"] as const)
+          return (["SS", "S", "A", "Trash"] as const)
             .map((k) => merged[k])
             .filter((o): o is OutcomeSlice => !!o && o.prob > 1e-9);
         })()

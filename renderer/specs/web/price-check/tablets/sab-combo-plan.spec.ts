@@ -9,13 +9,16 @@ import { buildTierSaleTable } from "@/web/price-check/tablets/tablet-mdp";
 import { modRollCurveKey } from "@/web/price-check/tablets/mod-roll-price-curve";
 import {
   applySabSyncHit,
+  buildSabDeepSyncWorklist,
   buildSabSyncWorklist,
   collapseModsByTradeStat,
   enumerateSabCombos,
+  finalizeDeepSoloSCurves,
   finalizeSoloSCurve,
   sabModsForBase,
   type SabSyncWorkItem,
 } from "@/web/price-check/tablets/sab-combo-plan";
+import { rollSampleProngs } from "@/web/price-check/tablets/mod-roll-price-curve";
 import type { TabletModDefinition } from "@/web/price-check/tablets/tablet-types";
 import type { ModQualityTier } from "@/web/price-check/tablets/strat-types";
 
@@ -320,13 +323,13 @@ describe("sab-combo-plan", () => {
       ),
     ).toBe(false);
 
-    // B+B (eff + vruun) is not searched
+    // B+B (eff + vruun) is Trash-tier MDP (not searched)
     expect(
       classifyModCombo(
         ["junk_monster_eff_t1", "breach_vruun_chance_t1"],
         "breach_tablet",
       ).rareTier,
-    ).toBe("B");
+    ).toBe("Trash");
     expect(
       plan.some(
         (w) =>
@@ -335,6 +338,32 @@ describe("sab-combo-plan", () => {
           w.modIds.length === 2,
       ),
     ).toBe(false);
+  });
+
+  it("buildSabDeepSyncWorklist replaces solo-S with lo/mid/hi prongs", () => {
+    const plan = buildSabDeepSyncWorklist("temple_tablet");
+    const standard = buildSabSyncWorklist("temple_tablet", 40);
+    const crystal = TABLET_MOD_WEIGHTS.temple_crystal_t1!;
+    const prongs = rollSampleProngs(crystal.minValue, crystal.maxValue);
+    expect(prongs).toEqual([5, 7, 10]);
+
+    const crystalSolos = plan.filter(
+      (w) => w.kind === "solo" && w.modIds[0] === "temple_crystal_t1",
+    );
+    expect(crystalSolos).toHaveLength(prongs.length);
+    expect(crystalSolos.map((w) => w.prongRoll).sort((a, b) => a! - b!)).toEqual(
+      [...prongs].sort((a, b) => a - b),
+    );
+    expect(plan.length).toBe(standard.length - 1 + prongs.length);
+    expect(
+      new Set(plan.map((w) => w.stats.map((s) => `${s.id}@${s.min}-${s.max}`).join("|"))).size,
+    ).toBe(plan.length);
+  });
+
+  it("buildSabDeepSyncWorklist is uncapped vs standard 40-cap on large bases", () => {
+    const deep = buildSabDeepSyncWorklist("overseer_tablet");
+    const standard = buildSabSyncWorklist("overseer_tablet", 40);
+    expect(deep.length).toBeGreaterThan(standard.length);
   });
 
   it("solo S crystal worklist emits one 65th-pct roll @8", () => {
@@ -452,13 +481,13 @@ describe("sab-combo-plan", () => {
     market.currencyCosts.transmute = 0.01;
     market.currencyCosts.augmentation = 0.02;
     market.currencyCosts.regal = 0.15;
-    // Cross-side B+B (pack|waystone) → MDP B (score 20), not A
+    // Cross-side B+B (pack|waystone) → MDP Trash (B/junk filler)
     expect(
       classifyModCombo(
         ["map_pack_size_t1", "map_waystone_qty_t1"],
         "temple_tablet",
       ).rareTier,
-    ).toBe("B");
+    ).toBe("Trash");
     market.measuredAffixSamples = [
       {
         baseId: "temple_tablet",
@@ -544,15 +573,15 @@ describe("sab-combo-plan", () => {
       },
       {
         base: "ritual",
-        prev: 15,
-        A: 9,
-        B_noSB: 6,
-        AB_dropped: 6,
-        SB: 3,
+        prev: 11,
+        A: 7,
+        B_noSB: 3,
+        AB_dropped: 4,
+        SB: 4,
         allS3: 0,
         sMods: 1,
-        refreshA: 15,
-        refreshB: 12,
+        refreshA: 13,
+        refreshB: 9,
       },
       {
         base: "overseer",

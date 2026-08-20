@@ -5,7 +5,9 @@ import {
   classifySide,
   comboScoreToRareTier,
   itemComboScore,
+  modComboToRareTier,
   modQualityTierForBase,
+  rareTierFromSidePatterns,
 } from "@/web/price-check/tablets/mod-tiers";
 import { WEIGHT_BENCH } from "@/web/price-check/tablets/mod-weights";
 
@@ -71,7 +73,7 @@ describe("multi-affix combo tiering", () => {
     );
   });
 
-  it("solo S scores above double A (same MDP bucket A)", () => {
+  it("solo S scores above double A (score helper approximates A tier)", () => {
     const soloS = itemComboScore(
       [
         "junk_gold_t1",
@@ -95,7 +97,32 @@ describe("multi-affix combo tiering", () => {
     expect(comboScoreToRareTier(doubleA)).toBe("A");
   });
 
-  it("SS or SA (same side or cross) → MDP S (divine)", () => {
+  it("pattern classifier: solo S → S; AA → A", () => {
+    expect(
+      modComboToRareTier(
+        [
+          "junk_gold_t1",
+          "junk_xp_t1",
+          "breach_unstable_rare_t1",
+          "junk_extra_shrine_t1",
+        ],
+        breach,
+      ),
+    ).toBe("S");
+    expect(
+      modComboToRareTier(
+        [
+          "junk_gold_t1",
+          "junk_xp_t1",
+          "breach_rare_potency_t1",
+          "breach_pack_size_t1",
+        ],
+        breach,
+      ),
+    ).toBe("A");
+  });
+
+  it("SS or SA (same side or cross) → MDP SS (divine)", () => {
     // 2× S suffixes
     expect(
       classifyModCombo(
@@ -107,7 +134,7 @@ describe("multi-affix combo tiering", () => {
         ],
         breach,
       ).rareTier,
-    ).toBe("S");
+    ).toBe("SS");
     // S+A suffixes (unstable + potency)
     expect(
       classifyModCombo(
@@ -119,9 +146,8 @@ describe("multi-affix combo tiering", () => {
         ],
         breach,
       ).rareTier,
-    ).toBe("S");
-    // Overseer-style cross still works elsewhere; Breach shared eff is B
-    // so use same-side SA above for divine. Solo S + B support stays A:
+    ).toBe("SS");
+    // Solo S + B support stays S:
     expect(
       classifyModCombo(
         [
@@ -132,6 +158,15 @@ describe("multi-affix combo tiering", () => {
         ],
         breach,
       ).rareTier,
+    ).toBe("S");
+  });
+
+  it("cross A|A → A (not SS/S)", () => {
+    expect(
+      modComboToRareTier(
+        ["junk_monster_eff_t1", "junk_rare_mons_t1"],
+        "abyss_tablet",
+      ),
     ).toBe("A");
   });
 
@@ -161,20 +196,20 @@ describe("multi-affix combo tiering", () => {
   });
 
   it("1p+1s pairs use the same scorer", () => {
-    // Same-side SA (potency A + unstable S) → MDP S
+    // Same-side SA (potency A + unstable S) → MDP SS
     expect(
       classifyModCombo(
         ["breach_rare_potency_t1", "breach_unstable_rare_t1"],
         breach,
       ).rareTier,
-    ).toBe("S");
-    // Same-side SA (pack A + hiveblood S) → MDP S
+    ).toBe("SS");
+    // Same-side SA (pack A + hiveblood S) → MDP SS
     expect(
       classifyModCombo(
         ["breach_pack_size_t1", "breach_hiveblood_t1"],
         breach,
       ).rareTier,
-    ).toBe("S");
+    ).toBe("SS");
     // Domain dead: pack + splinter is solo A → B
     expect(
       classifyModCombo(
@@ -189,6 +224,15 @@ describe("multi-affix combo tiering", () => {
         breach,
       ).rareTier,
     ).toBe("B");
+  });
+
+  it("rareTierFromSidePatterns cross S|S → SS", () => {
+    expect(
+      rareTierFromSidePatterns("S", "S", { pS: 1, pA: 0, sS: 1, sA: 0 }),
+    ).toBe("SS");
+    expect(
+      rareTierFromSidePatterns("S", "A", { pS: 1, pA: 0, sS: 0, sA: 1 }),
+    ).toBe("SS");
   });
 });
 
@@ -217,24 +261,24 @@ describe("Temple per-base quality (survey 2026-08-12)", () => {
     );
   });
 
-  it("crystal alone → MDP S; waystone/eff alone not S; non-crystal A|A not S", () => {
+  it("crystal alone → MDP SS; waystone/eff alone not SS; non-crystal A|A not SS", () => {
     expect(
       classifyModCombo(["junk_gold_t1", "temple_crystal_t1"], temple)
         .rareTier,
-    ).toBe("S");
+    ).toBe("SS");
     expect(
       classifyModCombo(["map_waystone_qty_t1"], temple).rareTier,
-    ).not.toBe("S");
+    ).not.toBe("SS");
     expect(
       classifyModCombo(["junk_monster_eff_t1"], temple).rareTier,
-    ).not.toBe("S");
+    ).not.toBe("SS");
     // Former Irradiated A|A pair must not promote on Temple (both B / Junk)
     expect(
       classifyModCombo(
         ["junk_monster_eff_t1", "junk_map_mods_t1"],
         temple,
       ).rareTier,
-    ).not.toBe("S");
+    ).not.toBe("SS");
   });
 
   it("Breach potency+unstable still promote under breach_tablet map", () => {
@@ -243,7 +287,7 @@ describe("Temple per-base quality (survey 2026-08-12)", () => {
         ["breach_rare_potency_t1", "breach_unstable_rare_t1"],
         breach,
       ).rareTier,
-    ).toBe("S");
+    ).toBe("SS");
     expect(modQualityTierForBase(breach, "breach_unstable_rare_t1")).toBe(
       "S",
     );

@@ -88,7 +88,7 @@ export function estimateTabletSellPrice(
     : Number.NaN;
 
   // High tiers: roll-specific curve on S-quality mods (e.g. crystal %)
-  if (rareTier === "S" || rareTier === "A") {
+  if (rareTier === "SS" || rareTier === "S" || rareTier === "A") {
     let bestRoll = Number.NaN;
     let detail = "";
     let priceSource: PriceSource = "measured";

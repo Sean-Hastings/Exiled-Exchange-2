@@ -5,6 +5,7 @@ import {
   buildModRollPriceCurve,
   modRollCurveKey,
   rollAtPercentile65,
+  rollSampleProngs,
   type RollPriceAnchor,
 } from "./mod-roll-price-curve";
 import type { TabletModDefinition } from "./tablet-types";
@@ -236,6 +237,51 @@ export function buildSabSyncWorklist(
   return enumerateSabCombos(sabModsForBase(baseId), safetyMax, baseId);
 }
 
+/**
+ * Uncapped SAB worklist with multi-prong solo-S queries (lo/mid/hi rolls).
+ * Solo-A, duos, and all-S triples/quads match the standard worklist; each
+ * solo-S is replaced by rollSampleProngs variants deduped by stats signature.
+ */
+export function buildSabDeepSyncWorklist(baseId: string): SabSyncWorkItem[] {
+  const M = sabModsForBase(baseId);
+  const raw = enumerateSabCombos(M, Infinity, baseId);
+  const seenSig = new Set<string>();
+  const out: SabSyncWorkItem[] = [];
+
+  const push = (item: SabSyncWorkItem | null) => {
+    if (!item) return;
+    const sig = statsSignature(item.stats);
+    if (seenSig.has(sig)) return;
+    seenSig.add(sig);
+    out.push(item);
+  };
+
+  for (const item of raw) {
+    if (
+      item.kind === "solo" &&
+      item.modIds.length === 1 &&
+      qualityOf(item.modIds[0]!, baseId) === "S"
+    ) {
+      const mod = TABLET_MOD_WEIGHTS[item.modIds[0]!];
+      if (!mod) continue;
+      for (const prongRoll of rollSampleProngs(mod.minValue, mod.maxValue)) {
+        push(workItemFromMods([mod], { prongRoll }));
+      }
+      continue;
+    }
+    push(item);
+  }
+
+  out.sort((a, b) => {
+    if (a.modIds.length !== b.modIds.length) {
+      return a.modIds.length - b.modIds.length;
+    }
+    return a.comboKey.localeCompare(b.comboKey);
+  });
+
+  return out;
+}
+
 function ensurePriceSource(market: MarketPriceCache) {
   if (!market.priceSource) market.priceSource = {};
   if (!market.priceSource.junkSellByBase) market.priceSource.junkSellByBase = {};
@@ -347,6 +393,25 @@ export function bestProngSellEx(anchors: RollPriceAnchor[]): number {
   return best;
 }
 
+/** After deep solo-S prong searches: fit curves or flat-expand best prong. */
+export function finalizeDeepSoloSCurves(
+  market: MarketPriceCache,
+  baseId: string,
+  soloSAnchors: Map<string, RollPriceAnchor[]>,
+) {
+  for (const [modId, anchors] of soloSAnchors) {
+    const mod = TABLET_MOD_WEIGHTS[modId];
+    if (!mod) continue;
+    const ok = finalizeSoloSCurve(market, baseId, mod, anchors);
+    if (!ok) {
+      const best = bestProngSellEx(anchors);
+      if (Number.isFinite(best) && best > 0) {
+        expandSoloSAOppositePool(market, baseId, mod, best);
+      }
+    }
+  }
+}
+
 /**
  * Write a successful SAB search into cache:
  * - Solo S/A: expand the 65th-pct price across entire opposite pool (1p1s grid).
@@ -359,6 +424,7 @@ export function applySabSyncHit(
   baseId: string,
   item: SabSyncWorkItem,
   price: number,
+  opts?: { soloSAnchors?: Map<string, RollPriceAnchor[]> },
 ) {
   if (!Number.isFinite(price) || price <= 0) return;
 
@@ -374,6 +440,21 @@ export function applySabSyncHit(
     const m = mods[0]!;
     const q = modQualityTierForBase(baseId, m.id);
     if (q === "S" || q === "A") {
+      if (q === "S" && opts?.soloSAnchors) {
+        const roll =
+          item.prongRoll ??
+          item.stats[0]?.min ??
+          rollAtPercentile65(m.minValue, m.maxValue);
+        if (Number.isFinite(roll)) {
+          let bucket = opts.soloSAnchors.get(m.id);
+          if (!bucket) {
+            bucket = [];
+            opts.soloSAnchors.set(m.id, bucket);
+          }
+          bucket.push({ roll, sellEx: price });
+        }
+        return;
+      }
       expandSoloSAOppositePool(market, baseId, m, price);
       return;
     }

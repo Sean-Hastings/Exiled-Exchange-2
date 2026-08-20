@@ -30,3 +30,5 @@ export * from "./craft-path-sample";
 export * from "./batch-law";
 export * from "./batch-risk-mixture";
 export * from "./tier-uncertainty";
+export * from "./combo-tier-overrides";
+export * from "./combo-tier-enumerate";

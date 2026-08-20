@@ -102,7 +102,7 @@ const EXPLICIT_TIER_BY_BASE: Record<
     ritual_reroll_cost_t1: "A",
     ritual_free_reroll_t1: "A",
     ritual_defer_cost_t1: "A",
-    ritual_tribute_t1: "A",
+    ritual_tribute_t1: "B",
     ritual_revived_rare_t1: "B",
     ritual_defer_t1: "B",
     junk_monster_eff_t1: "B",
@@ -393,17 +393,78 @@ export function itemComboScore(modIds: string[], baseId?: string): number {
   return score;
 }
 
+/** MDP rare bucket (5-tier ladder). */
+export type RareTier = "SS" | "S" | "A" | "B" | "Trash";
+
+export const RARE_TIERS: RareTier[] = ["SS", "S", "A", "B", "Trash"];
+
 /**
- * Map combo score → MDP rare bucket.
+ * Pattern-aware rare tier from prefix/suffix side patterns + cross counts.
  *
- *   S     ≥ 60  — SS / SA / cross S+A|S+S  (list / divine)
- *   A     ≥ 40  — solo S / AA / strong cross-A
- *   B     ≥ 20  — solo A (merchant low)
+ *   SS — same-side SA/SS or cross S|S / S|A
+ *   S  — solo S on either side
+ *   A  — AA same-side or cross A|A
+ *   B  — solo A
+ *   Trash — B/junk only
+ */
+export function rareTierFromSidePatterns(
+  prefixSide: SidePattern,
+  suffixSide: SidePattern,
+  counts: { pS: number; pA: number; sS: number; sA: number },
+): RareTier {
+  const { pS, pA, sS, sA } = counts;
+  const p = prefixSide;
+  const s = suffixSide;
+  // SS: same-side SA/SS or cross S|S / S|A
+  if (p === "SS" || p === "SA" || s === "SS" || s === "SA") return "SS";
+  if (pS >= 1 && sS >= 1) return "SS";
+  if ((pS >= 1 && sA >= 1) || (sS >= 1 && pA >= 1)) return "SS";
+  // S: solo S on either side
+  if (p === "S" || s === "S") return "S";
+  // A: AA same-side or cross A|A
+  if (p === "AA" || s === "AA") return "A";
+  if (pA >= 1 && sA >= 1) return "A";
+  // B: solo A
+  if (p === "A" || s === "A") return "B";
+  return "Trash";
+}
+
+export function modComboToRareTier(
+  modIds: string[],
+  baseId?: string,
+): RareTier {
+  const { prefixes, suffixes } = splitAffixSides(modIds);
+  let tier = rareTierFromSidePatterns(
+    classifySide(prefixes, baseId),
+    classifySide(suffixes, baseId),
+    {
+      pS: countTier(prefixes, "S", baseId),
+      pA: countTier(prefixes, "A", baseId),
+      sS: countTier(suffixes, "S", baseId),
+      sA: countTier(suffixes, "A", baseId),
+    },
+  );
+  // Temple crystal is jackpot — force SS (was S)
+  if (baseId === "temple_tablet" && modIds.includes("temple_crystal_t1")) {
+    tier = "SS";
+  }
+  return tier;
+}
+
+/**
+ * Map combo score → MDP rare bucket (score-only legacy helper).
+ *
+ * Prefer {@link modComboToRareTier} / {@link rareTierFromSidePatterns} for
+ * canonical pattern-aware classification.
+ *
+ *   SS    ≥ 85  — SS / SA / cross S+S
+ *   S     ≥ 60  — cross S+A (approx)
+ *   A     ≥ 40  — solo S / AA / cross A|A
+ *   B     ≥ 20  — solo A
  *   Trash < 20  — B/junk only
  */
-export function comboScoreToRareTier(
-  score: number,
-): "S" | "A" | "B" | "Trash" {
+export function comboScoreToRareTier(score: number): RareTier {
+  if (score >= 85) return "SS";
   if (score >= 60) return "S";
   if (score >= 40) return "A";
   if (score >= 20) return "B";
@@ -420,26 +481,17 @@ export function classifyModCombo(
   prefixSide: SidePattern;
   suffixSide: SidePattern;
   score: number;
-  rareTier: "S" | "A" | "B" | "Trash";
+  rareTier: RareTier;
 } {
   const { prefixes, suffixes } = splitAffixSides(modIds);
   const score = itemComboScore(modIds, baseId);
-  let rareTier = comboScoreToRareTier(score);
-  // Temple survey 2026-08-12: only crystal is premium — any rare with
-  // temple_crystal_t1 is MDP S so alch P(S) ≈ P(crystal on rare).
-  if (
-    baseId === "temple_tablet" &&
-    modIds.includes("temple_crystal_t1")
-  ) {
-    rareTier = "S";
-  }
   return {
     prefixes,
     suffixes,
     prefixSide: classifySide(prefixes, baseId),
     suffixSide: classifySide(suffixes, baseId),
     score,
-    rareTier,
+    rareTier: modComboToRareTier(modIds, baseId),
   };
 }
 

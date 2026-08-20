@@ -70,12 +70,14 @@ describe("batch-risk-mixture", () => {
     const policy = {
       blank: "Scour-Alch" as const,
       rare: {
+        SS: "List" as const,
         S: "List" as const,
         A: "List" as const,
         B: "List" as const,
         Trash: "List" as const,
       },
       corrupt: {
+        SS: "List" as const,
         S: "List" as const,
         A: "List" as const,
         B: "List" as const,
@@ -118,7 +120,7 @@ describe("batch-risk-mixture", () => {
   it("pools MC sample banks across outer draws (method A)", async () => {
     const market = measuredFixture();
     const policy = defaultPolicy("Scour-Alch");
-    policy.rare = { S: "List", A: "List", B: "List", Trash: "List" };
+    policy.rare = { SS: "List", S: "List", A: "List", B: "List", Trash: "List" };
 
     const mix = await computeMixtureRisk({
       baseId: "breach_tablet",

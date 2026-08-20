@@ -46,7 +46,7 @@ describe("estimateTabletSellPrice", () => {
   it("prices high-tier crystal by roll curve", () => {
     const low = estimateTabletSellPrice(crystalTablet(5), templeMarket());
     const high = estimateTabletSellPrice(crystalTablet(10), templeMarket());
-    expect(low.rareTier).toBe("S");
+    expect(low.rareTier).toBe("SS");
     expect(low.basis).toBe("roll-curve");
     expect(low.sellEx).toBeGreaterThan(500);
     expect(high.sellEx).toBeGreaterThan(low.sellEx);

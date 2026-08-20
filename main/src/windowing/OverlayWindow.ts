@@ -14,6 +14,8 @@ export class OverlayWindow {
   private window?: BrowserWindow;
   private overlayKey: string = "Shift + Space";
   private isOverlayKeyUsed = false;
+  /** Detached DevTools is a separate BrowserWindow; focusing it minimizes PoE2. */
+  private readonly allowDevTools = process.argv.includes("--devtools");
 
   constructor(
     private server: ServerEvents,
@@ -42,16 +44,20 @@ export class OverlayWindow {
         allowRunningInsecureContent: false,
         webviewTag: true,
         spellcheck: false,
+        // Production / default: no DevTools. Detached DevTools steals focus on
+        // Shift+Space and makes PoE2 look like it minimized/closed.
+        devTools: this.allowDevTools,
       },
     });
 
-    this.window.setMenu(
-      Menu.buildFromTemplate([
-        { role: "editMenu" },
-        { role: "reload" },
-        { role: "toggleDevTools" },
-      ]),
-    );
+    const menuTemplate: Electron.MenuItemConstructorOptions[] = [
+      { role: "editMenu" },
+      { role: "reload" },
+    ];
+    if (this.allowDevTools) {
+      menuTemplate.push({ role: "toggleDevTools" });
+    }
+    this.window.setMenu(Menu.buildFromTemplate(menuTemplate));
 
     this.window.webContents.on("before-input-event", this.handleExtraCommands);
     this.window.webContents.on(
@@ -77,12 +83,7 @@ export class OverlayWindow {
     }
 
     this.window.loadURL(url);
-    // Detached DevTools steals focus when the overlay activates (Shift+Space),
-    // which looks like the game "closing". Open via the window menu if needed.
-    if (
-      process.env.VITE_DEV_SERVER_URL &&
-      process.argv.includes("--devtools")
-    ) {
+    if (this.allowDevTools) {
       this.window.webContents.openDevTools({ mode: "detach", activate: false });
     }
   }
@@ -90,10 +91,29 @@ export class OverlayWindow {
   assertOverlayActive = () => {
     if (!this.isInteractable) {
       this.isInteractable = true;
+      this.prepareOverlayForActivation();
       OverlayController.activateOverlay();
       this.poeWindow.isActive = false;
     }
   };
+
+  /** Keep focus on the overlay surface, not DevTools / stray BrowserWindows. */
+  private prepareOverlayForActivation() {
+    if (!this.window || this.window.isDestroyed()) return;
+
+    if (this.window.webContents.isDevToolsOpened()) {
+      this.window.webContents.closeDevTools();
+    }
+
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (win !== this.window && !win.isDestroyed()) {
+        win.close();
+      }
+    }
+
+    this.window.setSkipTaskbar(true);
+    this.window.setAlwaysOnTop(true, "screen-saver");
+  }
 
   assertGameActive = () => {
     if (this.isInteractable) {

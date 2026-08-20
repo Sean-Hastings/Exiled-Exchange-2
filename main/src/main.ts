@@ -73,7 +73,12 @@ let tray: AppTray;
     const fileWriter = new FileWriter(eventPipe, logger);
     const gameLogWatcher = new GameLogWatcher(eventPipe, logger, fileWriter);
 
-    if (process.env.VITE_DEV_SERVER_URL) {
+    // Vue DevTools (and any extension UI) can steal focus when the overlay
+    // activates and minimize PoE2. Only install when explicitly requested.
+    if (
+      process.env.VITE_DEV_SERVER_URL &&
+      process.argv.includes("--devtools")
+    ) {
       try {
         await installExtension(VUEJS_DEVTOOLS);
         logger.write("info Vue Devtools installed");

@@ -108,7 +108,7 @@ describe("tier-uncertainty", () => {
     const fake = "totally_fake_mod_id_for_session";
     const before = tierUncertaintyScore(fake, market, null, "breach_tablet");
     expect(before.reasons.noExplicitTier).toBe(true);
-    setSessionModTier(fake, "B");
+    setSessionModTier("breach_tablet", fake, "B");
     const after = tierUncertaintyScore(fake, market, null, "breach_tablet");
     expect(after.score).toBeLessThan(before.score);
     expect(after.reasons.noExplicitTier).toBe(false);
@@ -118,7 +118,7 @@ describe("tier-uncertainty", () => {
     expect(ranked.every((r) => !r.reasons.noExplicitTier)).toBe(true);
     const hive = ranked.find((r) => r.modId === "breach_hiveblood_t1")!;
     expect(hive.tier).toBe("S");
-    setSessionModTier("breach_hiveblood_t1", "B");
+    setSessionModTier("breach_tablet", "breach_hiveblood_t1", "B");
     const ranked2 = rankTierUncertainty("breach_tablet", market, null);
     expect(
       ranked2.find((r) => r.modId === "breach_hiveblood_t1")!.tier,
@@ -158,7 +158,7 @@ describe("tier-uncertainty", () => {
       expect(compareTierUncertaintyRows(marked, unmarked)).toBeLessThan(0);
 
       const market = createEmptyMarketCache();
-      setSessionModTier("breach_hiveblood_t1", "B");
+      setSessionModTier("breach_tablet", "breach_hiveblood_t1", "B");
       const ranked = rankTierUncertainty("breach_tablet", market, null);
       const hiveIdx = ranked.findIndex((r) => r.modId === "breach_hiveblood_t1");
       expect(hiveIdx).toBe(0);
@@ -179,8 +179,8 @@ describe("tier-uncertainty", () => {
       expect(sorted.map((r) => r.tier)).toEqual(["S", "A", "B", "Junk"]);
 
       const market = createEmptyMarketCache();
-      setSessionModTier("breach_hiveblood_t1", "B");
-      setSessionModTier("breach_unstable_rare_t1", "S");
+      setSessionModTier("breach_tablet", "breach_hiveblood_t1", "B");
+      setSessionModTier("breach_tablet", "breach_unstable_rare_t1", "S");
       const ranked = rankTierUncertainty("breach_tablet", market, null);
       const marked = ranked.filter((r) => r.isMarked);
       expect(marked.map((r) => r.modId)).toEqual([
@@ -189,7 +189,7 @@ describe("tier-uncertainty", () => {
       ]);
     });
 
-    it("marked rows with score 0 remain visible (panel filter)", () => {
+    it("score-0 rows stay in the ranked list (panel shows full pool)", () => {
       const market = createEmptyMarketCache();
       market.modValueMap["map_pack_size_t2+temple_crystal_t1"] = 700;
       const survey: TierSurveyDocument = {
@@ -217,7 +217,7 @@ describe("tier-uncertainty", () => {
         anchors: { dumpEx: 50, blankBuyEx: 100 },
         followUpsGenerated: false,
       };
-      setSessionModTier("temple_crystal_t1", "S");
+      // Unmarked but fully certain (explicit + sale + survey)
       const crystalScore = tierUncertaintyScore(
         "temple_crystal_t1",
         market,
@@ -228,10 +228,12 @@ describe("tier-uncertainty", () => {
 
       const ranked = rankTierUncertainty("temple_tablet", market, survey);
       const crystal = ranked.find((r) => r.modId === "temple_crystal_t1")!;
-      expect(crystal.isMarked).toBe(true);
+      expect(crystal.isMarked).toBe(false);
       expect(crystal.score).toBe(0);
-      const visible = ranked.filter((r) => r.isMarked || r.score > 0);
-      expect(visible.some((r) => r.modId === "temple_crystal_t1")).toBe(true);
+      // Panel uses full ranked list — no score>0 filter
+      expect(ranked.some((r) => r.modId === "temple_crystal_t1")).toBe(true);
+      const last = ranked[ranked.length - 1]!;
+      expect(last.score).toBeLessThanOrEqual(ranked[0]!.score);
     });
 
     it("unmarked rows still sort by score descending", () => {

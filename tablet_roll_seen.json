@@ -1,6 +1,6 @@
 {
   "revision": 1,
-  "updatedAt": 1787217847983,
+  "updatedAt": 1787288711725,
   "batches": [
     {
       "id": "temple-alch-2026-08-12",
@@ -470,6 +470,24 @@
         {
           "modId": "ritual_omen_t1",
           "hits": 5
+        }
+      ]
+    },
+    {
+      "id": "a242ada3-dc69-4575-8c94-84b24134aa47",
+      "baseId": "ritual_tablet",
+      "createdAt": 1787288711724,
+      "updatedAt": 1787288711724,
+      "affixesPerTablet": 1,
+      "tablets": 159,
+      "hits": [
+        {
+          "modId": "ritual_reroll_t1",
+          "hits": 2
+        },
+        {
+          "modId": "ritual_omen_t1",
+          "hits": 6
         }
       ]
     }

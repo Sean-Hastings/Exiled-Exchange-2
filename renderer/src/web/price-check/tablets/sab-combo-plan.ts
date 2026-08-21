@@ -1,11 +1,14 @@
 import { TABLET_BASES, TABLET_MOD_WEIGHTS } from "./mod-weights";
-import { modQualityTierForBase } from "./mod-tiers";
+import {
+  modComboToRareTier,
+  modQualityTierForBase,
+  type RareTier,
+} from "./mod-tiers";
 import { isTradeQueryableStatId } from "./tier-survey-plan";
 import {
   buildModRollPriceCurve,
   modRollCurveKey,
   rollAtPercentile65,
-  rollSampleProngs,
   type RollPriceAnchor,
 } from "./mod-roll-price-curve";
 import type { TabletModDefinition } from "./tablet-types";
@@ -14,6 +17,9 @@ import type { MarketPriceCache } from "./tablet-ev-calculator";
 
 /** S/A quality mods — Junk and B excluded from the sell worklist. */
 const SAB_QUALITIES = new Set<ModQualityTier>(["S", "A"]);
+
+/** RareTier bands deep sync measures as premium pair stamps. */
+const DEEP_PREMIUM_RARE = new Set<RareTier>(["SS", "S", "A"]);
 
 export type SabSyncKind = "solo" | "duo" | "triple" | "quad";
 
@@ -237,49 +243,83 @@ export function buildSabSyncWorklist(
   return enumerateSabCombos(sabModsForBase(baseId), safetyMax, baseId);
 }
 
+function hasJunkMod(modIds: string[], baseId: string): boolean {
+  return modIds.some((id) => qualityOf(id, baseId) === "Junk");
+}
+
+function allModsTradeQueryable(mods: TabletModDefinition[]): boolean {
+  return mods.every((m) => isTradeQueryableStatId(m.tradeStatId));
+}
+
+function isDeepPremiumPair(modIds: string[], baseId: string): boolean {
+  if (hasJunkMod(modIds, baseId)) return false;
+  return DEEP_PREMIUM_RARE.has(modComboToRareTier(modIds, baseId));
+}
+
 /**
- * Uncapped SAB worklist with multi-prong solo-S queries (lo/mid/hi rolls).
- * Solo-A, duos, and all-S triples/quads match the standard worklist; each
- * solo-S is replaced by rollSampleProngs variants deduped by stats signature.
+ * RareTier-aligned deep worklist: premium SS/S/A pairs (1p×1s + same-side
+ * unordered 2p/2s), then single-p65 S/A solos for opposite-pool expand fill.
+ * Pairs first so expand fills gaps after pair stamps.
  */
 export function buildSabDeepSyncWorklist(baseId: string): SabSyncWorkItem[] {
-  const M = sabModsForBase(baseId);
-  const raw = enumerateSabCombos(M, Infinity, baseId);
-  const seenSig = new Set<string>();
-  const out: SabSyncWorkItem[] = [];
+  const base = TABLET_BASES[baseId];
+  if (!base) return [];
 
-  const push = (item: SabSyncWorkItem | null) => {
+  const seenSig = new Set<string>();
+  const pairs: SabSyncWorkItem[] = [];
+  const solos: SabSyncWorkItem[] = [];
+
+  const push = (
+    bucket: SabSyncWorkItem[],
+    mods: TabletModDefinition[],
+  ) => {
+    if (!allModsTradeQueryable(mods)) return;
+    const item = workItemFromMods(mods);
     if (!item) return;
     const sig = statsSignature(item.stats);
     if (seenSig.has(sig)) return;
     seenSig.add(sig);
-    out.push(item);
+    bucket.push(item);
   };
 
-  for (const item of raw) {
-    if (
-      item.kind === "solo" &&
-      item.modIds.length === 1 &&
-      qualityOf(item.modIds[0]!, baseId) === "S"
-    ) {
-      const mod = TABLET_MOD_WEIGHTS[item.modIds[0]!];
-      if (!mod) continue;
-      for (const prongRoll of rollSampleProngs(mod.minValue, mod.maxValue)) {
-        push(workItemFromMods([mod], { prongRoll }));
-      }
-      continue;
+  const prefixes = base.allowedPrefixPool
+    .map((id) => TABLET_MOD_WEIGHTS[id])
+    .filter((m): m is TabletModDefinition => !!m);
+  const suffixes = base.allowedSuffixPool
+    .map((id) => TABLET_MOD_WEIGHTS[id])
+    .filter((m): m is TabletModDefinition => !!m);
+
+  // 1) Premium pairs (aligned with enumerateComboTierRows auto filter)
+  for (const p of prefixes) {
+    for (const s of suffixes) {
+      if (!isDeepPremiumPair([p.id, s.id], baseId)) continue;
+      push(pairs, [p, s]);
     }
-    push(item);
+  }
+  for (let i = 0; i < suffixes.length; i++) {
+    for (let j = i + 1; j < suffixes.length; j++) {
+      const a = suffixes[i]!;
+      const b = suffixes[j]!;
+      if (!isDeepPremiumPair([a.id, b.id], baseId)) continue;
+      push(pairs, [a, b]);
+    }
+  }
+  for (let i = 0; i < prefixes.length; i++) {
+    for (let j = i + 1; j < prefixes.length; j++) {
+      const a = prefixes[i]!;
+      const b = prefixes[j]!;
+      if (!isDeepPremiumPair([a.id, b.id], baseId)) continue;
+      push(pairs, [a, b]);
+    }
   }
 
-  out.sort((a, b) => {
-    if (a.modIds.length !== b.modIds.length) {
-      return a.modIds.length - b.modIds.length;
-    }
-    return a.comboKey.localeCompare(b.comboKey);
-  });
+  // 2) S/A quality solos (single p65) for opposite-pool expand fill
+  for (const m of sabModsForBase(baseId)) {
+    push(solos, [m]);
+  }
 
-  return out;
+  // 3) Pairs/duos first, solos last (expand fills gaps after pair stamps)
+  return [...pairs, ...solos];
 }
 
 function ensurePriceSource(market: MarketPriceCache) {
@@ -338,13 +378,19 @@ export function expandSoloSAOppositePool(
   if (!Number.isFinite(price) || price <= 0) return;
   const base = TABLET_BASES[baseId];
   if (!base) return;
+  const stampIfEmpty = (key: string) => {
+    const existing = market.modValueMap[key];
+    // Pair stamps win — do not clobber finite positive measured entries.
+    if (Number.isFinite(existing) && (existing as number) > 0) return;
+    stampMeasuredCombo(market, key, price);
+  };
   if (!mod.isPrefix) {
     for (const pId of base.allowedPrefixPool) {
-      stampMeasuredCombo(market, `${pId}+${mod.id}`, price);
+      stampIfEmpty(`${pId}+${mod.id}`);
     }
   } else {
     for (const sId of base.allowedSuffixPool) {
-      stampMeasuredCombo(market, `${mod.id}+${sId}`, price);
+      stampIfEmpty(`${mod.id}+${sId}`);
     }
   }
 }

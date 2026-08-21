@@ -61,9 +61,32 @@ describe("combo-tier-enumerate", () => {
     expect(trashOnly.length).toBe(0);
   });
 
+  it("excludes auto junk_gold+unstable without override", () => {
+    const rows = enumerateComboTierRows(breach);
+    const junkCross = rows.find(
+      (r) =>
+        r.comboKey === "junk_gold_t1+breach_unstable_rare_t1" &&
+        r.source === "auto",
+    );
+    expect(junkCross).toBeUndefined();
+  });
+
+  it("includes same-side SA (unstable+potency) as auto SS", () => {
+    const rows = enumerateComboTierRows(breach);
+    const sameSide = rows.find(
+      (r) =>
+        r.comboKey === "breach_rare_potency_t1+breach_unstable_rare_t1" &&
+        r.source === "auto",
+    );
+    expect(sameSide).toBeTruthy();
+    expect(sameSide!.autoTier).toBe("SS");
+    expect(sameSide!.tier).toBe("SS");
+    expect(sameSide!.suffixSide).toBe("SA");
+  });
+
   it("surfaces measured price when market provided", () => {
     const market = createEmptyMarketCache();
-    const key = "junk_gold_t1+breach_unstable_rare_t1";
+    const key = "breach_rare_potency_t1+breach_unstable_rare_t1";
     market.modValueMap[key] = 4200;
     const rows = enumerateComboTierRows(breach, market);
     const row = rows.find((r) => r.comboKey === key);

@@ -216,6 +216,77 @@ export function comboTierOverridesForBase(
   return [...map.values()];
 }
 
+/**
+ * Session merged into persisted — full byBase snapshot for repo Apply.
+ * Does not mutate persistedDoc; callers write via tier-overrides-store.
+ */
+export function snapshotComboTierOverrides(): ComboTierOverrideDocument {
+  const byBase: Record<string, Record<string, ComboTierOverrideEntry>> = {};
+  const baseIds = new Set([
+    ...Object.keys(persistedDoc?.byBase ?? {}),
+    ...Object.keys(SESSION_COMBO_TIER),
+  ]);
+  for (const baseId of baseIds) {
+    const merged: Record<string, ComboTierOverrideEntry> = {};
+    for (const entry of comboTierOverridesForBase(baseId)) {
+      merged[entry.comboKey] = { ...entry, modIds: [...entry.modIds] };
+    }
+    if (Object.keys(merged).length) byBase[baseId] = merged;
+  }
+  return {
+    revision: COMBO_TIER_OVERRIDE_REVISION,
+    byBase,
+  };
+}
+
+/**
+ * Load combo overrides from a repo document into persisted RAM + localStorage.
+ * Session overlays for covered bases are cleared so persisted wins on read.
+ */
+export function hydrateComboTierFromDoc(
+  byBase: Record<string, Record<string, ComboTierOverrideEntry>> | null | undefined,
+): void {
+  if (!byBase || typeof byBase !== "object") {
+    persistedDoc = {
+      revision: COMBO_TIER_OVERRIDE_REVISION,
+      byBase: {},
+    };
+    saveComboTierOverrides(persistedDoc);
+    return;
+  }
+
+  const next: ComboTierOverrideDocument = {
+    revision: COMBO_TIER_OVERRIDE_REVISION,
+    byBase: {},
+  };
+  for (const [baseId, map] of Object.entries(byBase)) {
+    if (!baseId || !map || typeof map !== "object") continue;
+    const cleaned: Record<string, ComboTierOverrideEntry> = {};
+    for (const [comboKey, entry] of Object.entries(map)) {
+      if (!entry || typeof entry !== "object") continue;
+      if (typeof entry.tier !== "string" || !Array.isArray(entry.modIds)) continue;
+      cleaned[comboKey] = {
+        comboKey: typeof entry.comboKey === "string" ? entry.comboKey : comboKey,
+        baseId: typeof entry.baseId === "string" ? entry.baseId : baseId,
+        modIds: entry.modIds.filter((id): id is string => typeof id === "string"),
+        tier: entry.tier as ComboTierOverrideEntry["tier"],
+        isCustom: entry.isCustom,
+        updatedAt:
+          typeof entry.updatedAt === "number" && Number.isFinite(entry.updatedAt)
+            ? entry.updatedAt
+            : Date.now(),
+      };
+    }
+    if (Object.keys(cleaned).length) next.byBase[baseId] = cleaned;
+  }
+  persistedDoc = next;
+  saveComboTierOverrides(next);
+  // Drop session shadows so getComboTierOverride reads hydrated persisted.
+  for (const baseId of Object.keys(SESSION_COMBO_TIER)) {
+    delete SESSION_COMBO_TIER[baseId];
+  }
+}
+
 /** Test isolation — clears session, persisted RAM, and localStorage. */
 export function resetComboTierOverridesForTests(): void {
   for (const k of Object.keys(SESSION_COMBO_TIER)) delete SESSION_COMBO_TIER[k];

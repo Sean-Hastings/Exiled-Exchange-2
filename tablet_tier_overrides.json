@@ -1,0 +1,27 @@
+{
+  "revision": 1,
+  "updatedAt": 1787289878386,
+  "modTiersByBase": {
+    "ritual_tablet": {
+      "ritual_reroll_cost_t1": "B",
+      "ritual_free_reroll_t1": "B",
+      "ritual_defer_t1": "Junk",
+      "ritual_defer_cost_t1": "B",
+      "junk_monster_eff_t1": "Junk"
+    }
+  },
+  "comboByBase": {
+    "ritual_tablet": {
+      "__solo__:ritual_omen_t1": {
+        "comboKey": "__solo__:ritual_omen_t1",
+        "baseId": "ritual_tablet",
+        "modIds": [
+          "ritual_omen_t1"
+        ],
+        "tier": "A",
+        "isCustom": true,
+        "updatedAt": 1787289876724
+      }
+    }
+  }
+}

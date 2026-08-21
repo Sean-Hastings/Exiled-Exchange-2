@@ -5,28 +5,44 @@ import { modRollCurveKey } from "@/web/price-check/tablets/mod-roll-price-curve"
 import {
   applySabSyncHit,
   buildSabDeepSyncWorklist,
+  expandSoloSAOppositePool,
   finalizeDeepSoloSCurves,
   type SabSyncWorkItem,
 } from "@/web/price-check/tablets/sab-combo-plan";
 
 describe("tablet-market deep sync", () => {
-  it("applySabSyncHit with soloSAnchors defers solo-S opposite-pool expand", () => {
+  it("applySabSyncHit expands solo S/A immediately (no deferred anchors)", () => {
     const market = createEmptyMarketCache();
     const base = TABLET_BASES.temple_tablet!;
-    const anchors = new Map<string, { roll: number; sellEx: number }[]>();
     const item: SabSyncWorkItem = {
       kind: "solo",
       modIds: ["temple_crystal_t1"],
       comboKey: "__solo__:temple_crystal_t1",
-      prongRoll: 5,
-      stats: [{ id: "explicit.stat_1940774881", min: 5, max: 5 }],
+      prongRoll: 8,
+      stats: [{ id: "explicit.stat_1940774881", min: 8, max: 8 }],
     };
 
-    applySabSyncHit(market, "temple_tablet", item, 775, { soloSAnchors: anchors });
+    applySabSyncHit(market, "temple_tablet", item, 900);
 
-    expect(anchors.get("temple_crystal_t1")).toEqual([{ roll: 5, sellEx: 775 }]);
     for (const pId of base.allowedPrefixPool) {
-      expect(market.modValueMap[`${pId}+temple_crystal_t1`]).toBeUndefined();
+      expect(market.modValueMap[`${pId}+temple_crystal_t1`]).toBe(900);
+    }
+  });
+
+  it("expandSoloSAOppositePool does not clobber existing pair stamps", () => {
+    const market = createEmptyMarketCache();
+    const base = TABLET_BASES.temple_tablet!;
+    const packKey = "map_pack_size_t1+temple_crystal_t1";
+    market.modValueMap[packKey] = 2500;
+
+    const crystal = TABLET_MOD_WEIGHTS.temple_crystal_t1!;
+    expandSoloSAOppositePool(market, "temple_tablet", crystal, 900);
+
+    expect(market.modValueMap[packKey]).toBe(2500);
+    for (const pId of base.allowedPrefixPool) {
+      const key = `${pId}+temple_crystal_t1`;
+      if (key === packKey) continue;
+      expect(market.modValueMap[key]).toBe(900);
     }
   });
 
@@ -72,21 +88,18 @@ describe("tablet-market deep sync", () => {
     }
   });
 
-  it("deep worklist solo-S prongs integrate with deferred anchor path", () => {
+  it("deep worklist solos apply immediately without multi-prong deferral", () => {
     const plan = buildSabDeepSyncWorklist("temple_tablet");
     const market = createEmptyMarketCache();
-    const anchors = new Map<string, { roll: number; sellEx: number }[]>();
+    const crystalSolos = plan.filter(
+      (w) => w.kind === "solo" && w.modIds[0] === "temple_crystal_t1",
+    );
+    expect(crystalSolos).toHaveLength(1);
+    expect(crystalSolos[0]!.prongRoll).toBe(8);
 
-    for (const item of plan.filter((w) => w.kind === "solo")) {
-      applySabSyncHit(market, "temple_tablet", item, 500 + (item.prongRoll ?? 0), {
-        soloSAnchors: anchors,
-      });
-    }
-
-    expect(anchors.get("temple_crystal_t1")).toHaveLength(3);
-    finalizeDeepSoloSCurves(market, "temple_tablet", anchors);
+    applySabSyncHit(market, "temple_tablet", crystalSolos[0]!, 900);
     expect(
-      market.modRollCurves?.[modRollCurveKey("temple_tablet", "temple_crystal_t1")],
-    ).toBeTruthy();
+      market.modValueMap["map_pack_size_t1+temple_crystal_t1"],
+    ).toBe(900);
   });
 });

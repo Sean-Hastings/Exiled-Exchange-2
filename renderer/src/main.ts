@@ -6,6 +6,7 @@ import { initConfig, AppConfig } from "./web/Config";
 import { Host } from "./web/background/IPC";
 import { installTabletTierSurveyHostBridge } from "./web/price-check/tablets/tablet-survey-host-bridge";
 import { installTabletRollSeenRepoSync } from "./web/price-check/tablets/tablet-roll-seen-host-bridge";
+import { installTabletTierOverridesRepoSync } from "./web/price-check/tablets/tablet-tier-overrides-host-bridge";
 import { installTabletMarketSyncHostBridge } from "./web/price-check/tablets/tablet-market-sync-host-bridge";
 (async function () {
   await initConfig();
@@ -17,6 +18,7 @@ import { installTabletMarketSyncHostBridge } from "./web/price-check/tablets/tab
   await Host.init();
   installTabletTierSurveyHostBridge();
   void installTabletRollSeenRepoSync();
+  void installTabletTierOverridesRepoSync();
 
   watch(
     () => AppConfig().language,

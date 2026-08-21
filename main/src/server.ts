@@ -15,6 +15,7 @@ import {
   maybeAutostartTabletSurveyFromArgv,
 } from "./tablet-survey-api";
 import { addTabletRollSeenRoutes } from "./tablet-roll-seen-api";
+import { addTabletTierOverridesRoutes } from "./tablet-tier-overrides-api";
 
 export const server = createServer();
 const websocketServer = new WebSocketServer({ noServer: true });
@@ -102,6 +103,7 @@ export async function startServer(
   addTabletTierSurveyRoutes(server, eventPipe, logger);
   maybeAutostartTabletSurveyFromArgv(eventPipe, logger);
   addTabletRollSeenRoutes(server, logger);
+  addTabletTierOverridesRoutes(server, logger);
 
   websocketServer.on("connection", (socket) => {
     lastActiveClient = socket;

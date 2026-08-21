@@ -194,8 +194,22 @@ const EXPLICIT_TIER_BY_BASE: Record<
   }),
 };
 
-/** Session overlay from TierUncertaintyPanel (not yet committed to base maps). */
-const SESSION_TIER_BY_MOD_ID: Record<string, ModQualityTier> = {};
+/**
+ * Per-base session overlay from TierUncertaintyPanel (not yet committed to
+ * base maps). Shared mod ids can differ by tablet base.
+ */
+const SESSION_TIER_BY_BASE: Record<string, Record<string, ModQualityTier>> = {};
+
+const MOD_QUALITY_TIERS: readonly ModQualityTier[] = [
+  "S",
+  "A",
+  "B",
+  "Junk",
+];
+
+function isModQualityTier(v: unknown): v is ModQualityTier {
+  return typeof v === "string" && (MOD_QUALITY_TIERS as readonly string[]).includes(v);
+}
 
 /** True iff modId has an entry in that base's explicit map (§3.8). */
 export function hasExplicitTier(modId: string, baseId?: string): boolean {
@@ -211,26 +225,87 @@ export function hasExplicitTier(modId: string, baseId?: string): boolean {
   return false;
 }
 
-export function hasSessionModTier(modId: string): boolean {
-  return Object.prototype.hasOwnProperty.call(SESSION_TIER_BY_MOD_ID, modId);
+/** If baseId set, that base only; otherwise true if any base has an overlay. */
+export function hasSessionModTier(modId: string, baseId?: string): boolean {
+  if (baseId) {
+    return Object.prototype.hasOwnProperty.call(
+      SESSION_TIER_BY_BASE[baseId] ?? {},
+      modId,
+    );
+  }
+  for (const map of Object.values(SESSION_TIER_BY_BASE)) {
+    if (Object.prototype.hasOwnProperty.call(map, modId)) return true;
+  }
+  return false;
 }
 
-export function getSessionModTier(modId: string): ModQualityTier | undefined {
-  return SESSION_TIER_BY_MOD_ID[modId];
+export function getSessionModTier(
+  baseId: string,
+  modId: string,
+): ModQualityTier | undefined {
+  return SESSION_TIER_BY_BASE[baseId]?.[modId];
 }
 
-/** Runtime tier overlay for uncertainty panel; does not mutate base maps. */
+/**
+ * Runtime tier overlay for uncertainty panel; does not mutate base maps.
+ * Does not rebuild EV — call {@link clearChaosTransitionCache} + recompute
+ * via the panel's Apply button.
+ */
 export function setSessionModTier(
+  baseId: string,
   modId: string,
   tier: ModQualityTier | null,
 ): void {
-  if (tier == null) delete SESSION_TIER_BY_MOD_ID[modId];
-  else SESSION_TIER_BY_MOD_ID[modId] = tier;
+  if (tier == null) {
+    const map = SESSION_TIER_BY_BASE[baseId];
+    if (!map) return;
+    delete map[modId];
+    if (!Object.keys(map).length) delete SESSION_TIER_BY_BASE[baseId];
+    return;
+  }
+  if (!SESSION_TIER_BY_BASE[baseId]) SESSION_TIER_BY_BASE[baseId] = {};
+  SESSION_TIER_BY_BASE[baseId][modId] = tier;
 }
 
-export function clearSessionModTiers(): void {
-  for (const k of Object.keys(SESSION_TIER_BY_MOD_ID)) {
-    delete SESSION_TIER_BY_MOD_ID[k];
+/** Clear one base's session overlays, or all when baseId omitted. */
+export function clearSessionModTiers(baseId?: string): void {
+  if (baseId) {
+    delete SESSION_TIER_BY_BASE[baseId];
+    return;
+  }
+  for (const k of Object.keys(SESSION_TIER_BY_BASE)) {
+    delete SESSION_TIER_BY_BASE[k];
+  }
+}
+
+/** Deep clone of current per-base session overlays (for repo Apply). */
+export function snapshotSessionModTiers(): Record<
+  string,
+  Record<string, ModQualityTier>
+> {
+  const out: Record<string, Record<string, ModQualityTier>> = {};
+  for (const [base, map] of Object.entries(SESSION_TIER_BY_BASE)) {
+    const next: Record<string, ModQualityTier> = {};
+    for (const [modId, tier] of Object.entries(map)) {
+      next[modId] = tier;
+    }
+    if (Object.keys(next).length) out[base] = next;
+  }
+  return out;
+}
+
+/** Replace session overlays from a repo / cache document (drops prior). */
+export function hydrateSessionModTiers(
+  modTiersByBase: Record<string, Record<string, ModQualityTier>> | null | undefined,
+): void {
+  clearSessionModTiers();
+  if (!modTiersByBase || typeof modTiersByBase !== "object") return;
+  for (const [baseId, map] of Object.entries(modTiersByBase)) {
+    if (!baseId || !map || typeof map !== "object") continue;
+    for (const [modId, tier] of Object.entries(map)) {
+      if (!modId || !isModQualityTier(tier)) continue;
+      setSessionModTier(baseId, modId, tier);
+    }
   }
 }
 
@@ -249,8 +324,14 @@ export function modQualityTierForBase(
   baseId: string | undefined,
   modId: string,
 ): ModQualityTier {
-  if (SESSION_TIER_BY_MOD_ID[modId]) return SESSION_TIER_BY_MOD_ID[modId]!;
   if (baseId) {
+    const sessionMap = SESSION_TIER_BY_BASE[baseId];
+    if (
+      sessionMap &&
+      Object.prototype.hasOwnProperty.call(sessionMap, modId)
+    ) {
+      return sessionMap[modId]!;
+    }
     const map = EXPLICIT_TIER_BY_BASE[baseId];
     if (map && Object.prototype.hasOwnProperty.call(map, modId)) {
       return map[modId]!;

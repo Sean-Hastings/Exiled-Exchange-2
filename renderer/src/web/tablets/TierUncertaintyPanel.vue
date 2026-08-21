@@ -13,11 +13,12 @@
     </div>
 
     <div class="text-gray-400 leading-snug">
-      Ranked by how unsure we are of quality tiers (not prices). Auto Breach
-      survey stays available separately. Manual price entry is secondary.
+      Edits update this panel live (mods + combo auto). Click
+      <span class="text-amber-200">Apply to EV</span> to push tiers into MDP /
+      strat / regex (avoids freezing on every click).
     </div>
 
-    <div class="overflow-auto max-h-56 border border-gray-800 rounded">
+    <div class="overflow-auto max-h-72 border border-gray-800 rounded">
       <table class="w-full text-left">
         <thead class="text-gray-500 sticky top-0 bg-gray-950">
           <tr>
@@ -33,6 +34,7 @@
             v-for="row in topRows"
             :key="row.modId"
             class="border-t border-gray-900 text-gray-300"
+            :class="{ 'bg-amber-950/25': row.isMarked }"
           >
             <td class="px-1 py-0.5 truncate max-w-[9rem]" :title="row.modId">
               {{ row.name }}
@@ -92,9 +94,9 @@
         >
           <div class="flex flex-wrap gap-2 items-end">
             <label class="flex flex-col gap-0.5 text-gray-400">
-              Prefix
+              Prefix1
               <select
-                v-model="definePrefixId"
+                v-model="definePrefix1Id"
                 class="bg-gray-900 border border-gray-700 rounded px-1 py-0.5 text-gray-200 max-w-[12rem]"
               >
                 <option value="">—</option>
@@ -104,9 +106,33 @@
               </select>
             </label>
             <label class="flex flex-col gap-0.5 text-gray-400">
-              Suffix
+              Prefix2
               <select
-                v-model="defineSuffixId"
+                v-model="definePrefix2Id"
+                class="bg-gray-900 border border-gray-700 rounded px-1 py-0.5 text-gray-200 max-w-[12rem]"
+              >
+                <option value="">—</option>
+                <option v-for="id in prefixPool" :key="id" :value="id">
+                  {{ modLabel(id) }}
+                </option>
+              </select>
+            </label>
+            <label class="flex flex-col gap-0.5 text-gray-400">
+              Suffix1
+              <select
+                v-model="defineSuffix1Id"
+                class="bg-gray-900 border border-gray-700 rounded px-1 py-0.5 text-gray-200 max-w-[12rem]"
+              >
+                <option value="">—</option>
+                <option v-for="id in suffixPool" :key="id" :value="id">
+                  {{ modLabel(id) }}
+                </option>
+              </select>
+            </label>
+            <label class="flex flex-col gap-0.5 text-gray-400">
+              Suffix2
+              <select
+                v-model="defineSuffix2Id"
                 class="bg-gray-900 border border-gray-700 rounded px-1 py-0.5 text-gray-200 max-w-[12rem]"
               >
                 <option value="">—</option>
@@ -202,6 +228,18 @@
     </div>
 
     <div class="flex flex-wrap gap-1 items-center">
+      <button
+        type="button"
+        class="btn text-xs"
+        :class="{
+          'ring-1 ring-amber-400 text-amber-100': tiersDirty,
+          'opacity-50': !tiersDirty,
+        }"
+        :disabled="!tiersDirty"
+        @click="applyTiers"
+      >
+        {{ tiersDirty ? "Apply to EV / MDP" : "EV up to date" }}
+      </button>
       <button type="button" class="btn text-xs" @click="emit('refresh-selected')">
         Refresh selected market
       </button>
@@ -232,6 +270,8 @@ import {
   removeComboOverride,
   setSessionComboTier,
   setSessionModTier,
+  snapshotComboTierOverrides,
+  snapshotSessionModTiers,
   tabletTierSurvey,
   validateComboMods,
   type ComboTierRow,
@@ -240,25 +280,37 @@ import {
   type RareTier,
   type TierUncertaintyRow,
 } from "@/web/price-check/tablets";
+import {
+  commitTierOverrides,
+  emptyTierOverridesDocument,
+} from "@/web/price-check/tablets/tier-overrides-store";
 
 const props = defineProps<{
   baseId: string;
   market: MarketPriceCache;
 }>();
 
-const emit = defineEmits(["close", "refresh-selected", "tier-changed"]);
+const emit = defineEmits([
+  "close",
+  "refresh-selected",
+  "tiers-applied",
+]);
 
 const modTiers: ModQualityTier[] = ["S", "A", "B", "Junk"];
 const rareTiers: RareTier[] = RARE_TIERS;
 const showManual = ref(false);
 const showCombos = ref(true);
 const showDefineCombo = ref(false);
-const definePrefixId = ref("");
-const defineSuffixId = ref("");
+const definePrefix1Id = ref("");
+const definePrefix2Id = ref("");
+const defineSuffix1Id = ref("");
+const defineSuffix2Id = ref("");
 const defineTier = ref<RareTier>("SS");
 const defineError = ref("");
 /** Bump to recompute ranking after session tier writes. */
 const tick = shallowRef(0);
+/** True until Apply pushes session tiers into EV/MDP. */
+const tiersDirty = ref(false);
 
 onMounted(() => {
   hydrateComboTierOverrides();
@@ -277,12 +329,13 @@ const suffixPool = computed(
 
 const topRows = computed(() => {
   void tick.value;
-  const rows = rankTierUncertainty(
+  // Full pool: score-0 (perfect certainty) stays visible so tiers can be
+  // reassigned. Sort already puts marked first, then uncertain → certain.
+  return rankTierUncertainty(
     props.baseId,
     props.market,
     tabletTierSurvey.value,
   );
-  return rows.filter((r) => r.score > 0).slice(0, 24);
 });
 
 const comboRows = computed(() => {
@@ -291,7 +344,11 @@ const comboRows = computed(() => {
 });
 
 const canDefineCombo = computed(
-  () => !!definePrefixId.value || !!defineSuffixId.value,
+  () =>
+    !!definePrefix1Id.value ||
+    !!definePrefix2Id.value ||
+    !!defineSuffix1Id.value ||
+    !!defineSuffix2Id.value,
 );
 
 function modLabel(modId: string): string {
@@ -339,33 +396,57 @@ function rareTierClass(t: RareTier): string {
   }
 }
 
-function setModTier(modId: string, tier: ModQualityTier) {
-  setSessionModTier(modId, tier);
+function markTiersDirty() {
   tick.value++;
-  emit("tier-changed");
+  tiersDirty.value = true;
+}
+
+function applyTiers() {
+  if (!tiersDirty.value) return;
+  const comboSnap = snapshotComboTierOverrides();
+  const doc = {
+    ...emptyTierOverridesDocument(),
+    updatedAt: Date.now(),
+    modTiersByBase: snapshotSessionModTiers(),
+    comboByBase: comboSnap.byBase,
+  };
+  commitTierOverrides(doc);
+  tiersDirty.value = false;
+  emit("tiers-applied");
+}
+
+function setModTier(modId: string, tier: ModQualityTier) {
+  setSessionModTier(props.baseId, modId, tier);
+  markTiersDirty();
 }
 
 function setComboTier(row: ComboTierRow, tier: RareTier) {
   setSessionComboTier(props.baseId, row.modIds, tier, {
     isCustom: row.isCustom,
   });
-  tick.value++;
-  emit("tier-changed");
+  markTiersDirty();
 }
 
 function clearComboTier(row: ComboTierRow) {
   removeComboOverride(props.baseId, row.modIds);
-  tick.value++;
-  emit("tier-changed");
+  markTiersDirty();
 }
 
 function saveDefinedCombo() {
   defineError.value = "";
-  const modIds: string[] = [];
-  if (definePrefixId.value) modIds.push(definePrefixId.value);
-  if (defineSuffixId.value) modIds.push(defineSuffixId.value);
+  const picked = [
+    definePrefix1Id.value,
+    definePrefix2Id.value,
+    defineSuffix1Id.value,
+    defineSuffix2Id.value,
+  ].filter(Boolean);
+  const modIds = [...new Set(picked)];
   if (!modIds.length) {
     defineError.value = "Pick at least one prefix or suffix.";
+    return;
+  }
+  if (picked.length !== modIds.length) {
+    defineError.value = "Duplicate mods are not allowed.";
     return;
   }
   if (!validateComboMods(props.baseId, modIds)) {
@@ -375,10 +456,11 @@ function saveDefinedCombo() {
   setSessionComboTier(props.baseId, modIds, defineTier.value, {
     isCustom: true,
   });
-  definePrefixId.value = "";
-  defineSuffixId.value = "";
+  definePrefix1Id.value = "";
+  definePrefix2Id.value = "";
+  defineSuffix1Id.value = "";
+  defineSuffix2Id.value = "";
   showDefineCombo.value = false;
-  tick.value++;
-  emit("tier-changed");
+  markTiersDirty();
 }
 </script>

@@ -117,12 +117,12 @@ export function tierUncertaintyScore(
   baseId?: string,
 ): { score: number; reasons: TierUncertaintyReasons } {
   const explicit =
-    hasExplicitTier(modId, baseId) || hasSessionModTier(modId);
+    hasExplicitTier(modId, baseId) || hasSessionModTier(modId, baseId);
   const touching = saleTouching(modId, market, baseId);
   // valueScore fallback ≡ no explicit map entry (session still "fallback" for
   // the third bit until committed — but we treat session as resolved above).
   const valueScoreFallback =
-    !hasExplicitTier(modId, baseId) && !hasSessionModTier(modId);
+    !hasExplicitTier(modId, baseId) && !hasSessionModTier(modId, baseId);
   const noAuto = !hasAutoSurveyObservation(modId, survey);
 
   const reasons: TierUncertaintyReasons = {
@@ -165,7 +165,7 @@ export function rankTierUncertainty(
       tier: modQualityTierForBase(baseId, modId),
       score,
       reasons,
-      isMarked: hasSessionModTier(modId),
+      isMarked: hasSessionModTier(modId, baseId),
     });
   };
 

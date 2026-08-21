@@ -17,9 +17,7 @@ import {
   applySabSyncHit,
   buildSabDeepSyncWorklist,
   buildSabSyncWorklist,
-  finalizeDeepSoloSCurves,
 } from "./sab-combo-plan";
-import type { RollPriceAnchor } from "./mod-roll-price-curve";
 import {
   BUY_DEPTH_COLD_DEFAULT,
   BUY_DEPTH_HOT,
@@ -1326,7 +1324,7 @@ export async function syncTabletMarketFromTrade(opts?: {
    * Buyout (`securable`) is empty. Default off.
    */
   includeAvailable?: boolean;
-  /** Standard capped worklist vs deep uncapped + solo-S roll prongs. */
+  /** Standard capped worklist vs deep RareTier SS/S/A pairs + single-p65 S/A solos. */
   syncMode?: "standard" | "deep";
 }): Promise<MarketSyncResult> {
   const combosPerBase = opts?.combosPerBase ?? 40;
@@ -1697,7 +1695,6 @@ export async function syncTabletMarketFromTrade(opts?: {
     const comboTotal = plans.reduce((n, p) => n + p.work.length, 0);
     for (const { base, work } of plans) {
       clearBaseSellSlice(market, base.id);
-      const soloSAnchors = new Map<string, RollPriceAnchor[]>();
 
       const pending = pendingByBase.get(base.id);
       const typeName =
@@ -1741,14 +1738,9 @@ export async function syncTabletMarketFromTrade(opts?: {
         });
 
         if (price != null && isFinitePositive(price)) {
-          applySabSyncHit(market, base.id, item, price, {
-            soloSAnchors: isDeep ? soloSAnchors : undefined,
-          });
+          applySabSyncHit(market, base.id, item, price);
           stats.combosPriced++;
         }
-      }
-      if (isDeep && soloSAnchors.size) {
-        finalizeDeepSoloSCurves(market, base.id, soloSAnchors);
       }
       emitPartial();
     }
@@ -2004,7 +1996,7 @@ export async function syncTabletMarketFromTrade(opts?: {
       ? `${stats.basesPriced} bases(mean@hot${BUY_DEPTH_HOT}/B${buyCountB}/warm${BUY_DEPTH_N}${flowProbeEnabled ? "+flow" : ""},10u,any-currency,${listingTag},p65,+magic+rare-flow)`
       : null,
     stats.combosPriced
-      ? `${stats.combosPriced} SAB-combos(sell,${listingTag},p65${isDeep ? ",deep-prongs" : ""},noSB)`
+      ? `${stats.combosPriced} SAB-combos(sell,${listingTag},p65${isDeep ? ",deep-pairs" : ""},noSB)`
       : null,
     `${exaltPerChaos.toFixed(0)}ex/c`,
     `${exaltPerDivine.toFixed(0)}ex/div`,

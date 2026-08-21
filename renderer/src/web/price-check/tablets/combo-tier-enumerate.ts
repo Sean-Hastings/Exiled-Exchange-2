@@ -3,6 +3,7 @@ import {
   RARE_TIERS,
   classifyModCombo,
   modComboToRareTier,
+  modQualityTierForBase,
   type RareTier,
   type SidePattern,
 } from "./mod-tiers";
@@ -33,9 +34,14 @@ function tierRank(tier: RareTier): number {
   return RARE_TIERS.indexOf(tier);
 }
 
+function hasJunkMod(modIds: string[], baseId: string): boolean {
+  return modIds.some((id) => modQualityTierForBase(baseId, id) === "Junk");
+}
+
 /**
- * 1p×1s grid for the selected base, plus custom / override-only combos.
- * Includes auto SS/S/A rows and any override (including B/Trash).
+ * Cross-side 1p×1s plus same-side 2p / 2s pairs for the selected base,
+ * plus custom / override-only combos.
+ * Auto rows are non-Junk SS/S/A only; overrides (incl. Junk / B / Trash) still show.
  */
 export function enumerateComboTierRows(
   baseId: string,
@@ -45,6 +51,8 @@ export function enumerateComboTierRows(
   if (!base) return [];
 
   const rows = new Map<string, ComboTierRow>();
+  const prefixes = base.allowedPrefixPool;
+  const suffixes = base.allowedSuffixPool;
 
   const addRow = (modIds: string[]) => {
     const comboKey = canonicalComboKey(baseId, modIds);
@@ -56,6 +64,7 @@ export function enumerateComboTierRows(
     const override = getComboTierOverride(baseId, comboKey);
     const hasOverride = source === "override";
 
+    if (hasJunkMod(modIds, baseId) && !hasOverride) return;
     if (!PREMIUM_AUTO.has(autoTier) && !hasOverride) return;
 
     const rawPrice = market?.modValueMap?.[comboKey];
@@ -76,9 +85,21 @@ export function enumerateComboTierRows(
     });
   };
 
-  for (const pId of base.allowedPrefixPool) {
-    for (const sId of base.allowedSuffixPool) {
+  for (const pId of prefixes) {
+    for (const sId of suffixes) {
       addRow([pId, sId]);
+    }
+  }
+
+  for (let i = 0; i < suffixes.length; i++) {
+    for (let j = i + 1; j < suffixes.length; j++) {
+      addRow([suffixes[i]!, suffixes[j]!]);
+    }
+  }
+
+  for (let i = 0; i < prefixes.length; i++) {
+    for (let j = i + 1; j < prefixes.length; j++) {
+      addRow([prefixes[i]!, prefixes[j]!]);
     }
   }
 

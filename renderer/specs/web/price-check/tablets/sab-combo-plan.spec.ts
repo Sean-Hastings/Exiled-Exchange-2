@@ -18,7 +18,6 @@ import {
   sabModsForBase,
   type SabSyncWorkItem,
 } from "@/web/price-check/tablets/sab-combo-plan";
-import { rollSampleProngs } from "@/web/price-check/tablets/mod-roll-price-curve";
 import type { TabletModDefinition } from "@/web/price-check/tablets/tablet-types";
 import type { ModQualityTier } from "@/web/price-check/tablets/strat-types";
 
@@ -340,24 +339,59 @@ describe("sab-combo-plan", () => {
     ).toBe(false);
   });
 
-  it("buildSabDeepSyncWorklist replaces solo-S with lo/mid/hi prongs", () => {
+  it("buildSabDeepSyncWorklist uses single p65 crystal solo and RareTier pairs", () => {
     const plan = buildSabDeepSyncWorklist("temple_tablet");
-    const standard = buildSabSyncWorklist("temple_tablet", 40);
-    const crystal = TABLET_MOD_WEIGHTS.temple_crystal_t1!;
-    const prongs = rollSampleProngs(crystal.minValue, crystal.maxValue);
-    expect(prongs).toEqual([5, 7, 10]);
-
     const crystalSolos = plan.filter(
       (w) => w.kind === "solo" && w.modIds[0] === "temple_crystal_t1",
     );
-    expect(crystalSolos).toHaveLength(prongs.length);
-    expect(crystalSolos.map((w) => w.prongRoll).sort((a, b) => a! - b!)).toEqual(
-      [...prongs].sort((a, b) => a - b),
-    );
-    expect(plan.length).toBe(standard.length - 1 + prongs.length);
+    expect(crystalSolos).toHaveLength(1);
+    expect(crystalSolos[0]!.prongRoll).toBe(8);
+    expect(crystalSolos[0]!.stats).toEqual([
+      { id: "explicit.stat_1940774881", min: 8, max: 8 },
+    ]);
+
+    // Crystal+pack (S+B → SS via temple jackpot) is a premium pair search
     expect(
-      new Set(plan.map((w) => w.stats.map((s) => `${s.id}@${s.min}-${s.max}`).join("|"))).size,
-    ).toBe(plan.length);
+      plan.some(
+        (w) =>
+          w.kind === "duo" &&
+          w.modIds.includes("temple_crystal_t1") &&
+          (w.modIds.includes("map_pack_size_t1") ||
+            w.modIds.includes("map_pack_size_t2")),
+      ),
+    ).toBe(true);
+
+    // Pairs before solos
+    const firstSoloIdx = plan.findIndex((w) => w.kind === "solo");
+    const lastDuoIdx = plan.reduce(
+      (acc, w, i) => (w.kind === "duo" ? i : acc),
+      -1,
+    );
+    expect(firstSoloIdx).toBeGreaterThan(-1);
+    expect(lastDuoIdx).toBeGreaterThan(-1);
+    expect(lastDuoIdx).toBeLessThan(firstSoloIdx);
+  });
+
+  it("buildSabDeepSyncWorklist includes Ritual omen+reroll and Breach unstable+potency", () => {
+    const ritual = buildSabDeepSyncWorklist("ritual_tablet");
+    expect(
+      ritual.some(
+        (w) =>
+          w.kind === "duo" &&
+          w.modIds.includes("ritual_omen_t1") &&
+          w.modIds.includes("ritual_reroll_t1"),
+      ),
+    ).toBe(true);
+
+    const breach = buildSabDeepSyncWorklist("breach_tablet");
+    expect(
+      breach.some(
+        (w) =>
+          w.kind === "duo" &&
+          w.modIds.includes("breach_unstable_rare_t1") &&
+          w.modIds.includes("breach_rare_potency_t1"),
+      ),
+    ).toBe(true);
   });
 
   it("buildSabDeepSyncWorklist is uncapped vs standard 40-cap on large bases", () => {

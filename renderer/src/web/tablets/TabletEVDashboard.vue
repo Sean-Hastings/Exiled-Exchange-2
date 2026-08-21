@@ -70,6 +70,15 @@
                 : "Deep Refresh"
           }}
         </button>
+        <button
+          v-if="isRefreshing"
+          type="button"
+          class="btn text-xs"
+          title="Cancel the in-flight market sync"
+          @click="cancelRefresh"
+        >
+          Cancel
+        </button>
         <label
           class="flex items-center gap-1 text-xs text-gray-400 px-1"
           title="Off: Instant Buyout (in-game marketplace) only. On: if Instant Buyout is empty, also search in-person / trade-site listings."
@@ -160,7 +169,7 @@
         :market="market"
         @close="showTierUncertainty = false"
         @refresh-selected="refreshSelected"
-        @tier-changed="recompute"
+        @tiers-applied="onTiersApplied"
       />
 
       <div
@@ -712,7 +721,7 @@ export default {
 </script>
 
 <script setup lang="ts">
-import { computed, inject, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, inject, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
 import Widget from "../overlay/Widget.vue";
 import BatchRiskPanel from "./BatchRiskPanel.vue";
 import RollSeenPanel from "./RollSeenPanel.vue";
@@ -721,6 +730,8 @@ import { Host, MainProcess } from "@/web/background/IPC";
 import type { WidgetManager } from "../overlay/interfaces";
 import {
   BLANK_STRATEGY_LABELS,
+  clearChaosTransitionCache,
+  cancelTabletMarketSync,
   ensureTabletMarketDeepRefresh,
   ensureTabletMarketSynced,
   getHighValueModsForBase,
@@ -786,6 +797,8 @@ const craftCountC = tabletCraftCountC;
 const includeWhisper = tabletIncludeWhisper;
 const showDebug = ref(false);
 const showTierUncertainty = ref(false);
+/** Bumped on Apply so selectedExplain recomputes with session tiers. */
+const sessionTierEpoch = shallowRef(0);
 const showRollSeen = ref(false);
 const expandedSearch = ref<number | null>(0);
 const expandedCombo = ref<number | null>(null);
@@ -861,6 +874,8 @@ const confidenceFitResidual = computed(() => {
 
 const selectedExplain = computed(() => {
   if (!selectedId.value) return null;
+  // Session tier Apply bumps this so strat / regex re-run with new quality maps.
+  void sessionTierEpoch.value;
   // Per-base opts so shared mods from other applied fits never leak in.
   return new TabletEVEngine(
     market.value,
@@ -943,6 +958,13 @@ function recompute() {
   expandedCombo.value = null;
 }
 
+/** Session/combo tier Apply: drop stale chaos cache, then rebuild EV + explain. */
+function onTiersApplied() {
+  clearChaosTransitionCache();
+  sessionTierEpoch.value++;
+  recompute();
+}
+
 function shortBaseName(name: string) {
   return name.replace(/\s*Tablet\s*$/i, "") || name;
 }
@@ -999,6 +1021,11 @@ async function refreshSelected() {
   } finally {
     refreshScope.value = null;
   }
+}
+
+function cancelRefresh() {
+  cancelTabletMarketSync();
+  refreshScope.value = null;
 }
 
 function stripRegexQuotes(regex: string): string {

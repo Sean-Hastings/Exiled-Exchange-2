@@ -458,6 +458,17 @@ export function cancelBreachTierSurvey() {
   tabletTierSurveyDetail.value = "Cancel requested…";
 }
 
+/** Abort in-flight trade market sync; refresh buttons re-enable (status leaves loading). */
+export function cancelTabletMarketSync() {
+  syncGeneration++;
+  inflight = null;
+  tabletMarketStatus.value = {
+    state: "error",
+    message: "Market sync cancelled",
+    partial: false,
+  };
+}
+
 // hydrate
 {
   const hit = loadSurvey();

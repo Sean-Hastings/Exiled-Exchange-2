@@ -341,6 +341,19 @@ export function modQualityTierForBase(
   return tierFromValueScore(modId);
 }
 
+/**
+ * Stable fingerprint of effective mod qualities for a base's affix pools.
+ * Used by chaos transition cache so session/persisted quality overlays invalidate.
+ */
+export function modQualityFingerprint(baseId: string): string {
+  const base = TABLET_BASES[baseId];
+  if (!base) return "none";
+  const ids = [...base.allowedPrefixPool, ...base.allowedSuffixPool].sort();
+  return ids
+    .map((id) => `${id}:${modQualityTierForBase(baseId, id)}`)
+    .join("|");
+}
+
 /** True if the 1p1s (or hovered magic) has an A or S worth keeping. */
 export function isPromisingMagic(
   modIds: readonly string[],

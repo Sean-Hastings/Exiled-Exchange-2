@@ -463,7 +463,8 @@ export function finalizeDeepSoloSCurves(
  * - Solo S/A: expand the 65th-pct price across entire opposite pool (1p1s grid).
  * - Solo B: unused no-op (worklist only searches S/A combos).
  * - Cross-side duo: stampMeasuredCombo(p+s).
- * - Same-side / triple / quad: measuredAffixSamples.
+ * - Same-side duo: stampMeasuredCombo(sorted) + measuredAffixSamples.
+ * - Triple / quad: measuredAffixSamples.
  */
 export function applySabSyncHit(
   market: MarketPriceCache,
@@ -512,6 +513,14 @@ export function applySabSyncHit(
     const p = mods.find((x) => x.isPrefix)!;
     const s = mods.find((x) => !x.isPrefix)!;
     stampMeasuredCombo(market, `${p.id}+${s.id}`, price);
+    return;
+  }
+
+  if (item.kind === "duo") {
+    // Same-side: stamp canonical sorted key so tier-uncertainty / sell UI
+    // see the price (samples alone never appear in modValueMap).
+    stampMeasuredCombo(market, [...item.modIds].sort().join("+"), price);
+    pushMeasuredAffixSample(market, baseId, item.modIds, price);
     return;
   }
 

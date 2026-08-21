@@ -1,13 +1,16 @@
 {
   "revision": 1,
-  "updatedAt": 1787289878386,
+  "updatedAt": 1787312747426,
   "modTiersByBase": {
     "ritual_tablet": {
-      "ritual_reroll_cost_t1": "B",
-      "ritual_free_reroll_t1": "B",
+      "ritual_reroll_cost_t1": "Junk",
+      "ritual_free_reroll_t1": "Junk",
       "ritual_defer_t1": "Junk",
-      "ritual_defer_cost_t1": "B",
-      "junk_monster_eff_t1": "Junk"
+      "ritual_defer_cost_t1": "Junk",
+      "junk_monster_eff_t1": "Junk",
+      "ritual_revived_rare_t1": "Junk",
+      "ritual_tribute_t1": "Junk",
+      "junk_item_rarity_t1": "Junk"
     }
   },
   "comboByBase": {
@@ -21,6 +24,16 @@
         "tier": "A",
         "isCustom": true,
         "updatedAt": 1787289876724
+      },
+      "__solo__:ritual_reroll_t1": {
+        "comboKey": "__solo__:ritual_reroll_t1",
+        "baseId": "ritual_tablet",
+        "modIds": [
+          "ritual_reroll_t1"
+        ],
+        "tier": "S",
+        "isCustom": true,
+        "updatedAt": 1787308735941
       }
     }
   }

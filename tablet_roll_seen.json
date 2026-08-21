@@ -1,6 +1,6 @@
 {
   "revision": 1,
-  "updatedAt": 1787288711725,
+  "updatedAt": 1787315539267,
   "batches": [
     {
       "id": "temple-alch-2026-08-12",
@@ -488,6 +488,70 @@
         {
           "modId": "ritual_omen_t1",
           "hits": 6
+        }
+      ]
+    },
+    {
+      "id": "7183ea23-ccbd-4c2b-a0f1-9992ca2d4948",
+      "baseId": "ritual_tablet",
+      "createdAt": 1787309382723,
+      "updatedAt": 1787309382723,
+      "affixesPerTablet": 6,
+      "tablets": 5,
+      "hits": [
+        {
+          "modId": "ritual_reroll_t1",
+          "hits": 0
+        },
+        {
+          "modId": "ritual_omen_t1",
+          "hits": 2
+        }
+      ]
+    },
+    {
+      "id": "f2a2ae13-7b00-48c8-92e4-0ee1ac32e892",
+      "baseId": "ritual_tablet",
+      "createdAt": 1787309472698,
+      "updatedAt": 1787309472698,
+      "affixesPerTablet": 1,
+      "tablets": 61,
+      "hits": [
+        {
+          "modId": "ritual_reroll_t1",
+          "hits": 0
+        },
+        {
+          "modId": "ritual_omen_t1",
+          "hits": 5
+        }
+      ]
+    },
+    {
+      "id": "034ed358-73cd-4619-abeb-0328480dfa02",
+      "baseId": "temple_tablet",
+      "createdAt": 1787315210578,
+      "updatedAt": 1787315210578,
+      "affixesPerTablet": 1,
+      "tablets": 116,
+      "hits": [
+        {
+          "modId": "temple_crystal_t1",
+          "hits": 6
+        }
+      ]
+    },
+    {
+      "id": "5c491a38-2d26-45cf-bd87-3853ace74b7d",
+      "baseId": "temple_tablet",
+      "createdAt": 1787315539267,
+      "updatedAt": 1787315539267,
+      "affixesPerTablet": 4,
+      "tablets": 6,
+      "hits": [
+        {
+          "modId": "temple_crystal_t1",
+          "hits": 0
         }
       ]
     }

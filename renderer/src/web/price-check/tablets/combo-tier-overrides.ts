@@ -1,5 +1,6 @@
 import {
   modComboToRareTier,
+  modQualityTierForBase,
   splitAffixSides,
   type RareTier,
 } from "./mod-tiers";
@@ -98,6 +99,28 @@ export function rareTierForCombo(
   const comboKey = canonicalComboKey(baseId, modIds);
   const override = getComboTierOverride(baseId, comboKey);
   if (override) return { tier: override.tier, source: "override" };
+
+  // Solo combo overrides (e.g. `__solo__:ritual_omen_t1→A`) only match the
+  // exact solo key. Alchemy/MDP use multi-mod keys — promote when exactly one
+  // mod has a solo override and every other affix is Junk/B filler.
+  const soloHits: Array<{ modId: string; tier: RareTier }> = [];
+  for (const modId of modIds) {
+    const solo = getComboTierOverride(baseId, `__solo__:${modId}`);
+    if (solo) soloHits.push({ modId, tier: solo.tier });
+  }
+  if (soloHits.length === 1) {
+    const hit = soloHits[0]!;
+    const othersAreFiller = modIds.every(
+      (id) =>
+        id === hit.modId ||
+        modQualityTierForBase(baseId, id) === "Junk" ||
+        modQualityTierForBase(baseId, id) === "B",
+    );
+    if (othersAreFiller) {
+      return { tier: hit.tier, source: "override" };
+    }
+  }
+
   return { tier: modComboToRareTier(modIds, baseId), source: "auto" };
 }
 

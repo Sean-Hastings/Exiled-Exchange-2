@@ -1015,8 +1015,8 @@ function multiModTabletQuery(
         {
           type: "and",
           filters: [
-            // Any remaining uses — crafted stock is often partially used
-            fullUsesFilter(1),
+            // Sell asks must be full (or near-full) stock — min 10 uses
+            fullUsesFilter(FULL_USES),
             ...stats.map((s) => {
               const hasMin = s.min != null;
               const hasMax = s.max != null;
@@ -2035,14 +2035,12 @@ function surveyModQuery(
   baseName: string,
   item: SurveyWorkItem,
   opts?: {
-    includeUses?: boolean;
     status?: "available" | "any" | "securable" | "online";
   },
 ): TabletTradeSearchBody {
-  const includeUses = opts?.includeUses !== false;
   const status = opts?.status ?? "securable";
   const filters = [
-    ...(includeUses ? [fullUsesFilter(1)] : []),
+    fullUsesFilter(FULL_USES),
     ...item.stats.map((s) => ({
       id: s.id,
       value: s.min != null ? { min: s.min } : undefined,
@@ -2356,10 +2354,6 @@ export async function runTabletTierSurvey(opts?: {
           continue;
         }
 
-        const isSplinterItem = item.modIds.some((id) =>
-          id.includes("splinter_qty"),
-        );
-
         let { price, trace } = await sellOncePreferMarket(ctx, (status) =>
           surveyModQuery(typeName, item, { status }),
         );
@@ -2369,28 +2363,6 @@ export async function runTabletTierSurvey(opts?: {
             return doc;
           }
           continue;
-        }
-
-        if (
-          isSplinterItem &&
-          !trace.error &&
-          (trace.totalHits == null || trace.totalHits === 0)
-        ) {
-          progress(`${ctx} — splinter 0 hits, retry without uses`);
-          ({ price, trace } = await sellOncePreferMarket(
-            `${ctx} (no-uses)`,
-            (status) =>
-              surveyModQuery(typeName, item, {
-                includeUses: false,
-                status,
-              }),
-          ));
-          if (trace.error && /rate limit/i.test(trace.error)) {
-            if ((await handleRateLimit(item, trace.error, ctx)) === "paused") {
-              return doc;
-            }
-            continue;
-          }
         }
 
         await gate.noteSuccess();

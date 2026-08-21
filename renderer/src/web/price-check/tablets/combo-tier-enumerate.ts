@@ -68,8 +68,20 @@ export function enumerateComboTierRows(
     if (!PREMIUM_AUTO.has(autoTier) && !hasOverride) return;
 
     const rawPrice = market?.modValueMap?.[comboKey];
-    const measuredEx =
+    let measuredEx =
       rawPrice != null && Number.isFinite(rawPrice) ? rawPrice : undefined;
+    if (measuredEx == null && market?.measuredAffixSamples?.length) {
+      const sorted = [...modIds].sort();
+      const sample = market.measuredAffixSamples.find(
+        (s) =>
+          s.baseId === baseId &&
+          s.modIds.length === sorted.length &&
+          s.modIds.every((id, i) => id === sorted[i]),
+      );
+      if (sample != null && Number.isFinite(sample.sellEx) && sample.sellEx > 0) {
+        measuredEx = sample.sellEx;
+      }
+    }
 
     rows.set(comboKey, {
       comboKey,

@@ -75,6 +75,31 @@ describe("combo-tier-overrides", () => {
     expect(over.tier).toBe("Trash");
   });
 
+  it("solo combo override promotes omen+junk to A (not auto B)", () => {
+    const ritual = "ritual_tablet";
+    // Without solo overlay, omen+junk filler is solo-A → MDP B.
+    expect(
+      rareTierForCombo(["junk_monster_eff_t1", "ritual_omen_t1"], ritual),
+    ).toEqual({ tier: "B", source: "auto" });
+
+    setSessionComboTier(ritual, ["ritual_omen_t1"], "A");
+    const omenJunk = rareTierForCombo(
+      ["junk_monster_eff_t1", "ritual_omen_t1"],
+      ritual,
+    );
+    expect(omenJunk.source).toBe("override");
+    expect(omenJunk.tier).toBe("A");
+
+    // Two solo overrides (omen A + reroll S) → leave to auto (SA → SS).
+    setSessionComboTier(ritual, ["ritual_reroll_t1"], "S");
+    const omenReroll = rareTierForCombo(
+      ["ritual_omen_t1", "ritual_reroll_t1"],
+      ritual,
+    );
+    expect(omenReroll.source).toBe("auto");
+    expect(omenReroll.tier).toBe("SS");
+  });
+
   it("falls back to persisted tier when session cleared", async () => {
     vi.useFakeTimers();
     const modIds = ["map_pack_size_t1", "breach_unstable_rare_t1"];

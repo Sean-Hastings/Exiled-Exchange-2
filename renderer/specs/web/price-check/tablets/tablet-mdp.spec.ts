@@ -4,6 +4,10 @@ import {
   resetComboTierOverridesForTests,
   setSessionComboTier,
 } from "@/web/price-check/tablets/combo-tier-overrides";
+import {
+  clearSessionModTiers,
+  setSessionModTier,
+} from "@/web/price-check/tablets/mod-tiers";
 import { TABLET_BASES } from "@/web/price-check/tablets/mod-weights";
 import type { MarketPriceCache } from "@/web/price-check/tablets/tablet-ev-calculator";
 import { applyTempleManualSurveyMarket } from "@/web/price-check/tablets/temple-manual-market";
@@ -109,6 +113,51 @@ describe("tablet-mdp", () => {
       expect(opt.rare[t]).not.toBe("List");
       expect(opt.marginalVsList[t]).toBeGreaterThan(0);
     }
+  });
+
+  it("optimal rare policy always Lists S and SS even when Chaos Q is higher", () => {
+    // Inflated SS asks + soft Trash continuation would previously Chaos S.
+    const sales = {
+      uncorrupted: { SS: 50_000, S: 6_000, A: 400, B: 40, Trash: 40 },
+      corrupted: { SS: 45_000, S: 5_000, A: 300, B: 30, Trash: 30 },
+      alchDist: { SS: 0.02, S: 0.08, A: 0.15, B: 0.1, Trash: 0.65 },
+      magicDist: { SS: 0.02, S: 0.08, A: 0.15, B: 0.1, Trash: 0.65 },
+      pMagicPromising: 0.25,
+      pMagicTrash: 0.75,
+      chaosFrom: {
+        SS: { SS: 0.7, S: 0.2, A: 0.05, B: 0.03, Trash: 0.02 },
+        // From S: meaningful chance to land SS, bricks soft via Trash V.
+        S: { SS: 0.35, S: 0.2, A: 0.1, B: 0.05, Trash: 0.3 },
+        A: { SS: 0.05, S: 0.15, A: 0.2, B: 0.1, Trash: 0.5 },
+        B: { SS: 0.02, S: 0.08, A: 0.15, B: 0.15, Trash: 0.6 },
+        Trash: { SS: 0.02, S: 0.08, A: 0.15, B: 0.1, Trash: 0.65 },
+      },
+      measuredFrac: 1,
+      magicOrbCost: 0.03,
+      magicConvertCost: 0.2,
+      alchOrbCost: 0.05,
+      chaosCost: 1,
+      vaalCost: 0.4,
+      baseCost: 100,
+      magicBuyCost: Number.NaN,
+      rareBuyCost: Number.NaN,
+      dumpFloor: 40,
+      dumpFloorSource: "measured" as const,
+      uncorruptedSource: {
+        SS: "measured" as const,
+        S: "measured" as const,
+        A: "measured" as const,
+        B: "measured" as const,
+        Trash: "measured" as const,
+      },
+    };
+    const opt = solveOptimalRarePolicy(sales);
+    expect(opt.rare.SS).toBe("List");
+    expect(opt.rare.S).toBe("List");
+    expect(opt.rerollWorthy).not.toContain("SS");
+    expect(opt.rerollWorthy).not.toContain("S");
+    // Chaos one-step Q on S still beats list under soft Trash V — policy ignores it.
+    expect(opt.actionMarginals.S.Chaos).toBeGreaterThan(0);
   });
 
   it("recommendPolicy uses optimal per-tier rare actions", () => {
@@ -243,6 +292,23 @@ describe("tablet-mdp", () => {
       Math.abs(a.Trash.B - b.Trash.B) +
       Math.abs(a.Trash.Trash - b.Trash.Trash);
     expect(l1).toBeGreaterThan(1e-6);
+  });
+
+  it("chaos cache isolates mod-quality session fingerprints", () => {
+    clearChaosTransitionCache();
+    clearSessionModTiers("temple_tablet");
+    const before = buildChaosOneAffixTransitions("temple_tablet");
+    setSessionModTier("temple_tablet", "temple_crystal_t1", "Junk");
+    const after = buildChaosOneAffixTransitions("temple_tablet");
+    const l1 =
+      Math.abs(before.Trash.SS - after.Trash.SS) +
+      Math.abs(before.Trash.S - after.Trash.S) +
+      Math.abs(before.Trash.A - after.Trash.A) +
+      Math.abs(before.Trash.B - after.Trash.B) +
+      Math.abs(before.Trash.Trash - after.Trash.Trash);
+    expect(l1).toBeGreaterThan(1e-6);
+    clearSessionModTiers("temple_tablet");
+    clearChaosTransitionCache();
   });
 
   it("point path buildTierSaleTable is unchanged without runtime overrides", () => {

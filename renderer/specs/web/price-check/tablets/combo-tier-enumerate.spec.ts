@@ -92,6 +92,21 @@ describe("combo-tier-enumerate", () => {
     const row = rows.find((r) => r.comboKey === key);
     expect(row?.measuredEx).toBe(4200);
   });
+
+  it("falls back to measuredAffixSamples for same-side price", () => {
+    const market = createEmptyMarketCache();
+    const key = "breach_rare_potency_t1+breach_unstable_rare_t1";
+    market.measuredAffixSamples = [
+      {
+        baseId: breach,
+        modIds: ["breach_rare_potency_t1", "breach_unstable_rare_t1"],
+        sellEx: 2800,
+      },
+    ];
+    const rows = enumerateComboTierRows(breach, market);
+    const row = rows.find((r) => r.comboKey === key);
+    expect(row?.measuredEx).toBe(2800);
+  });
 });
 
 function canonicalKey(modIds: string[]): string {

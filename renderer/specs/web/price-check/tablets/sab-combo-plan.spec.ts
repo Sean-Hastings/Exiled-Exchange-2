@@ -480,6 +480,32 @@ describe("sab-combo-plan", () => {
     ).toBeFalsy();
   });
 
+  it("same-side duo stamps modValueMap and measuredAffixSamples", () => {
+    const market = createEmptyMarketCache();
+    const item: SabSyncWorkItem = {
+      kind: "duo",
+      modIds: ["breach_rare_potency_t1", "breach_unstable_rare_t1"],
+      comboKey: "breach_rare_potency_t1+breach_unstable_rare_t1",
+      stats: [
+        { id: "explicit.stat_dummy_a", min: 1, max: 1 },
+        { id: "explicit.stat_dummy_b", min: 1, max: 1 },
+      ],
+    };
+    applySabSyncHit(market, "breach_tablet", item, 3500);
+
+    const key = "breach_rare_potency_t1+breach_unstable_rare_t1";
+    expect(market.modValueMap[key]).toBe(3500);
+    expect(market.priceSource?.modValueMap?.[key]).toBe("measured");
+    expect(
+      market.measuredAffixSamples?.some(
+        (s) =>
+          s.baseId === "breach_tablet" &&
+          s.sellEx === 3500 &&
+          s.modIds.join("+") === key,
+      ),
+    ).toBe(true);
+  });
+
   it("finalizeSoloSCurve stores curve and expands with E[p], not min prong", () => {
     const market = createEmptyMarketCache();
     const base = TABLET_BASES.temple_tablet!;

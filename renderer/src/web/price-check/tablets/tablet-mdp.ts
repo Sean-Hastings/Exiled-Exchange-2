@@ -17,6 +17,7 @@ import { rareTierForCombo } from "./combo-tier-overrides";
 import {
   RARE_TIERS,
   classifyModCombo,
+  modQualityFingerprint,
   modQualityTierForBase,
   rareTierFromSidePatterns,
   type RareTier,
@@ -210,7 +211,8 @@ export function modsToRareTier(modIds: string[], baseId?: string): RareTier {
 
 /**
  * Policy iteration over rare actions (all tiers). List/dump is always an
- * option; Chaos/Reforge/Vaal win a tier only when their Q beats list sale.
+ * option; Chaos/Reforge/Vaal win A/B/Trash only when their Q beats list sale.
+ * SS and S are always List (never chaos a premium ask).
  */
 export function solveOptimalRarePolicy(sales: TierSaleTable): {
   rare: CraftPolicy["rare"];
@@ -248,6 +250,14 @@ export function solveOptimalRarePolicy(sales: TierSaleTable): {
     let changed = false;
     const next = { ...rare };
     for (const tier of RARE_TIERS) {
+      // Always list S/SS — chaos/reforge/vaal on premium tiers is never advice.
+      if (tier === "SS" || tier === "S") {
+        if (next[tier] !== "List") {
+          next[tier] = "List";
+          changed = true;
+        }
+        continue;
+      }
       let best: RareAction = "List";
       let bestQ = qRareAction(sales, tier, "List", rareV, corruptV);
       for (const action of RARE_ACTIONS) {
@@ -608,15 +618,17 @@ export function magicOnePOneSBranchProbs(
  * Replacement outcomes are bucketed by mod quality (same quality → same
  * rare tier), so we never enumerate every pool id per slot.
  *
- * Cache key: `(baseId, weightFingerprint)` so runtime / mixture overrides
- * do not collide with the committed point path.
+ * Cache key: `(baseId, weightFingerprint, qualityFingerprint)` so runtime /
+ * mixture weight overrides and session/persisted mod-quality overlays do not
+ * collide with the committed point path.
  */
 export function buildChaosOneAffixTransitions(
   baseId: string,
   wOpts?: ModWeightOpts,
 ): Record<RareTier, Record<RareTier, number>> {
   const fp = tabletWeightFingerprint(baseId, wOpts);
-  const cacheKey = `${baseId}::${fp}`;
+  const qFp = modQualityFingerprint(baseId);
+  const cacheKey = `${baseId}::${fp}::${qFp}`;
   const cached = chaosFromCache.get(cacheKey);
   if (cached) return cached;
 
